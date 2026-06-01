@@ -1,0 +1,21 @@
+# Secrets and local env
+.env
+.env.local
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Data / runtime
+data/
+dump.rdb
+*.log
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
