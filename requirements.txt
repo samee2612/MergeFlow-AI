@@ -10,3 +10,4 @@ chromadb
 sentence-transformers
 networkx
 sendgrid
+pytest

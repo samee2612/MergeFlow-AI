@@ -15,6 +15,7 @@ load_dotenv()
 app = FastAPI(title="MergeFlow AI")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 GITHUB_API_VERSION = "2022-11-28"
+PRE_MERGE_REVIEW_ACTIONS = {"opened", "synchronize", "reopened"}
 
 
 def validate_github_signature(payload_body: bytes, signature_header: str | None) -> None:
@@ -46,6 +47,27 @@ def extract_mergeflow_labels(labels: list[dict[str, Any]]) -> list[str]:
         for label in labels
         if label.get("name", "").startswith("mergeflow:")
     ]
+
+
+def should_run_pre_merge_review(action: str | None, payload: dict[str, Any]) -> bool:
+    if action in PRE_MERGE_REVIEW_ACTIONS:
+        return True
+
+    if action == "edited":
+        return _pull_request_body_changed(payload)
+
+    return False
+
+
+def _pull_request_body_changed(payload: dict[str, Any]) -> bool:
+    changes = payload.get("changes", {})
+    body_change = changes.get("body")
+    if not isinstance(body_change, dict):
+        return False
+
+    previous_body = body_change.get("from")
+    current_body = payload.get("pull_request", {}).get("body")
+    return previous_body != current_body
 
 
 def enqueue_post_merge_job(payload: dict[str, Any], mergeflow_labels: list[str]) -> None:
@@ -102,7 +124,7 @@ def github_diff_headers() -> dict[str, str]:
     return headers
 
 
-async def enqueue_pre_merge_review(payload: dict[str, Any], mergeflow_labels: list[str]) -> None:
+async def enqueue_pre_merge_review(payload: dict[str, Any], mergeflow_labels: list[str]) -> bool:
     pull_request = payload["pull_request"]
     repository = payload.get("repository", {})
 
@@ -117,6 +139,13 @@ async def enqueue_pre_merge_review(payload: dict[str, Any], mergeflow_labels: li
         labels=mergeflow_labels,
     )
     diff_text = await fetch_pr_diff(diff_url)
+    if not diff_text.strip():
+        logger.info(
+            "Skipping pre-merge self review because PR diff is empty repo={repo} pr_number={pr_number}",
+            repo=repo_name,
+            pr_number=pr_number,
+        )
+        return False
 
     logger.info(
         "Enqueuing pre-merge self review job repo={repo} pr_number={pr_number} labels={labels}",
@@ -125,13 +154,14 @@ async def enqueue_pre_merge_review(payload: dict[str, Any], mergeflow_labels: li
         labels=mergeflow_labels,
     )
     run_pre_merge_review.delay(repo_name, pr_number, diff_text)
+    return True
 
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
-
+print("headers:", dict(request.headers))
 @app.post("/webhook")
 async def github_webhook(
     request: Request,
@@ -161,19 +191,16 @@ async def github_webhook(
 
     mergeflow_labels = extract_mergeflow_labels(pull_request.get("labels", []))
 
-    if action == "opened":
-        if not mergeflow_labels:
-            logger.info("Ignoring opened PR without mergeflow labels pr_number={pr_number}", pr_number=pr_number)
-            return {"status": "ignored"}
-
+    if should_run_pre_merge_review(action, payload):
         logger.info(
-            "Accepted MergeFlow pre-merge webhook repo={repo} pr_number={pr_number} labels={labels}",
+            "Accepted pre-merge self review webhook repo={repo} pr_number={pr_number} action={action} labels={labels}",
             repo=repository.get("full_name"),
             pr_number=pr_number,
+            action=action,
             labels=mergeflow_labels,
         )
-        await enqueue_pre_merge_review(payload, mergeflow_labels)
-        return {"status": "accepted"}
+        enqueued = await enqueue_pre_merge_review(payload, mergeflow_labels)
+        return {"status": "accepted" if enqueued else "ignored"}
 
     if action != "closed" or pull_request.get("merged") is not True:
         logger.info(
