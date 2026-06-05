@@ -5,17 +5,15 @@ from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
-import httpx
 from loguru import logger
 
-from backend.worker import run_pipeline, run_pre_merge_review
+from backend.github_client import fetch_pull_request_changed_files
+from backend.pipeline import PullRequestContext, run_post_merge_pipeline
 
 load_dotenv()
 
 app = FastAPI(title="MergeFlow AI")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
-GITHUB_API_VERSION = "2022-11-28"
-PRE_MERGE_REVIEW_ACTIONS = {"opened", "synchronize", "reopened"}
 
 
 def validate_github_signature(payload_body: bytes, signature_header: str | None) -> None:
@@ -41,127 +39,31 @@ def validate_github_signature(payload_body: bytes, signature_header: str | None)
         raise HTTPException(status_code=401, detail="Invalid signature")
 
 
-def extract_mergeflow_labels(labels: list[dict[str, Any]]) -> list[str]:
-    return [
-        label.get("name", "")
-        for label in labels
-        if label.get("name", "").startswith("mergeflow:")
-    ]
-
-
-def should_run_pre_merge_review(action: str | None, payload: dict[str, Any]) -> bool:
-    if action in PRE_MERGE_REVIEW_ACTIONS:
-        return True
-
-    if action == "edited":
-        return _pull_request_body_changed(payload)
-
-    return False
-
-
-def _pull_request_body_changed(payload: dict[str, Any]) -> bool:
-    changes = payload.get("changes", {})
-    body_change = changes.get("body")
-    if not isinstance(body_change, dict):
-        return False
-
-    previous_body = body_change.get("from")
-    current_body = payload.get("pull_request", {}).get("body")
-    return previous_body != current_body
-
-
-def enqueue_post_merge_job(payload: dict[str, Any], mergeflow_labels: list[str]) -> None:
+def build_pull_request_context(payload: dict[str, Any], changed_files: list[str]) -> PullRequestContext:
     pull_request = payload["pull_request"]
     repository = payload.get("repository", {})
-    head = pull_request.get("head", {})
     author = pull_request.get("user", {})
+    base = pull_request.get("base", {})
+    head = pull_request.get("head", {})
 
-    repo_name = repository.get("full_name", "")
-    pr_number = pull_request.get("number")
-    pr_title = pull_request.get("title", "")
-    pr_body = pull_request.get("body")
-    branch_name = head.get("ref", "")
-    diff_url = pull_request.get("diff_url", "")
-    author_login = author.get("login", "")
-
-    logger.info(
-        "Enqueuing post-merge pipeline job repo={repo} pr_number={pr_number} labels={labels}",
-        repo=repo_name,
-        pr_number=pr_number,
-        labels=mergeflow_labels,
+    return PullRequestContext(
+        repository=repository.get("full_name", ""),
+        pr_number=pull_request.get("number"),
+        title=pull_request.get("title", ""),
+        merged_at=pull_request.get("merged_at"),
+        author=author.get("login", ""),
+        changed_files=changed_files,
+        base_branch=base.get("ref", ""),
+        head_branch=head.get("ref", ""),
+        default_branch=repository.get("default_branch", ""),
     )
-    run_pipeline.delay(
-        repo_name,
-        pr_number,
-        pr_title,
-        pr_body,
-        branch_name,
-        mergeflow_labels,
-        diff_url,
-        author_login,
-    )
-
-
-async def fetch_pr_diff(diff_url: str) -> str:
-    if not diff_url:
-        raise HTTPException(status_code=400, detail="Pull request diff URL is missing")
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(diff_url, headers=github_diff_headers())
-        response.raise_for_status()
-        return response.text
-
-
-def github_diff_headers() -> dict[str, str]:
-    headers = {
-        "Accept": "application/vnd.github.v3.diff",
-        "X-GitHub-Api-Version": GITHUB_API_VERSION,
-    }
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    return headers
-
-
-async def enqueue_pre_merge_review(payload: dict[str, Any], mergeflow_labels: list[str]) -> bool:
-    pull_request = payload["pull_request"]
-    repository = payload.get("repository", {})
-
-    repo_name = repository.get("full_name", "")
-    pr_number = pull_request.get("number")
-    diff_url = pull_request.get("diff_url", "")
-
-    logger.info(
-        "Fetching diff for pre-merge self review repo={repo} pr_number={pr_number} labels={labels}",
-        repo=repo_name,
-        pr_number=pr_number,
-        labels=mergeflow_labels,
-    )
-    diff_text = await fetch_pr_diff(diff_url)
-    if not diff_text.strip():
-        logger.info(
-            "Skipping pre-merge self review because PR diff is empty repo={repo} pr_number={pr_number}",
-            repo=repo_name,
-            pr_number=pr_number,
-        )
-        return False
-
-    logger.info(
-        "Enqueuing pre-merge self review job repo={repo} pr_number={pr_number} labels={labels}",
-        repo=repo_name,
-        pr_number=pr_number,
-        labels=mergeflow_labels,
-    )
-    run_pre_merge_review.delay(repo_name, pr_number, diff_text)
-    return True
 
 
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
-print("headers:", dict(request.headers))
+
 @app.post("/webhook")
 async def github_webhook(
     request: Request,
@@ -189,19 +91,6 @@ async def github_webhook(
         logger.info("Ignoring unsupported GitHub event={event}", event=x_github_event)
         return {"status": "ignored"}
 
-    mergeflow_labels = extract_mergeflow_labels(pull_request.get("labels", []))
-
-    if should_run_pre_merge_review(action, payload):
-        logger.info(
-            "Accepted pre-merge self review webhook repo={repo} pr_number={pr_number} action={action} labels={labels}",
-            repo=repository.get("full_name"),
-            pr_number=pr_number,
-            action=action,
-            labels=mergeflow_labels,
-        )
-        enqueued = await enqueue_pre_merge_review(payload, mergeflow_labels)
-        return {"status": "accepted" if enqueued else "ignored"}
-
     if action != "closed" or pull_request.get("merged") is not True:
         logger.info(
             "Ignoring pull request event because it is not a merged PR action={action} merged={merged}",
@@ -210,16 +99,13 @@ async def github_webhook(
         )
         return {"status": "ignored"}
 
-    if not mergeflow_labels:
-        logger.info("Ignoring merged PR without mergeflow labels pr_number={pr_number}", pr_number=pr_number)
+    repo_name = repository.get("full_name", "")
+    if not repo_name or not isinstance(pr_number, int):
+        logger.warning("Ignoring merged PR because repository or PR number is missing")
         return {"status": "ignored"}
 
-    logger.info(
-        "Accepted MergeFlow post-merge webhook repo={repo} pr_number={pr_number} labels={labels}",
-        repo=repository.get("full_name"),
-        pr_number=pr_number,
-        labels=mergeflow_labels,
-    )
-    enqueue_post_merge_job(payload, mergeflow_labels)
+    changed_files = await fetch_pull_request_changed_files(repo_name, pr_number)
+    pr_context = build_pull_request_context(payload, changed_files)
+    accepted = await run_post_merge_pipeline(pr_context)
 
-    return {"status": "accepted"}
+    return {"status": "accepted" if accepted else "ignored"}

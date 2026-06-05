@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.main as main
+from backend.pipeline import is_backend_relevant_pr
 
 
 WEBHOOK_SECRET = "test-secret"
@@ -22,154 +23,227 @@ def client() -> TestClient:
     return TestClient(main.app)
 
 
-def _payload(action: str, *, merged: bool = False, labels: list[str] | None = None) -> dict[str, Any]:
+def _payload(
+    action: str,
+    *,
+    merged: bool = False,
+    changed_files: list[Any] | None = None,
+) -> dict[str, Any]:
     return {
         "action": action,
-        "repository": {"full_name": "owner/repo"},
+        "repository": {"full_name": "owner/repo", "default_branch": "main"},
         "pull_request": {
             "number": 42,
             "title": "Add feature",
-            "body": "Closes #123",
             "merged": merged,
-            "labels": [{"name": label} for label in (labels or [])],
-            "diff_url": "https://example.com/pr.diff",
-            "head": {"ref": "feat/123-add-feature"},
+            "merged_at": "2026-06-03T17:00:00Z",
             "user": {"login": "octocat"},
+            "base": {"ref": "master"},
+            "head": {"ref": "feat/orders"},
         },
+        "changed_files": changed_files or [],
     }
 
 
-def _signed_headers(payload_body: bytes) -> dict[str, str]:
+def _signed_headers(payload_body: bytes, *, event: str = "pull_request") -> dict[str, str]:
     signature = hmac.new(WEBHOOK_SECRET.encode("utf-8"), payload_body, hashlib.sha256).hexdigest()
     return {
         "Content-Type": "application/json",
-        "X-GitHub-Event": "pull_request",
+        "X-GitHub-Event": event,
         "X-Hub-Signature-256": f"sha256={signature}",
     }
 
 
-def _post_webhook(client: TestClient, payload: dict[str, Any]) -> Any:
+def _post_webhook(client: TestClient, payload: dict[str, Any], *, event: str = "pull_request") -> Any:
     payload_body = json.dumps(payload).encode("utf-8")
-    return client.post("/webhook", content=payload_body, headers=_signed_headers(payload_body))
+    return client.post("/webhook", content=payload_body, headers=_signed_headers(payload_body, event=event))
 
 
-def _stub_pre_merge(
+def test_health_check(client: TestClient) -> None:
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_webhook_rejects_missing_signature(client: TestClient) -> None:
+    payload_body = json.dumps(_payload("closed", merged=True)).encode("utf-8")
+
+    response = client.post(
+        "/webhook",
+        content=payload_body,
+        headers={"Content-Type": "application/json", "X-GitHub-Event": "pull_request"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Missing signature"}
+
+
+def test_webhook_rejects_invalid_signature(client: TestClient) -> None:
+    payload_body = json.dumps(_payload("closed", merged=True)).encode("utf-8")
+
+    response = client.post(
+        "/webhook",
+        content=payload_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-GitHub-Event": "pull_request",
+            "X-Hub-Signature-256": "sha256=invalid",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid signature"}
+
+
+def test_webhook_ignores_non_pull_request_event(
+    client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    diff_text: str = "diff --git a/app.py b/app.py\n+print('hello')",
-) -> list[tuple[str, int, str]]:
-    calls: list[tuple[str, int, str]] = []
+) -> None:
+    pipeline_calls: list[Any] = []
+    async def fake_pipeline(pr_context: Any) -> bool:
+        pipeline_calls.append(pr_context)
+        return True
 
-    async def fake_fetch_pr_diff(diff_url: str) -> str:
-        return diff_text
+    monkeypatch.setattr(main, "run_post_merge_pipeline", fake_pipeline)
 
-    def fake_delay(repo: str, pr_number: int, fetched_diff: str) -> None:
-        calls.append((repo, pr_number, fetched_diff))
+    response = _post_webhook(
+        client,
+        _payload("closed", merged=True, changed_files=["backend/services/orders.py"]),
+        event="push",
+    )
 
-    monkeypatch.setattr(main, "fetch_pr_diff", fake_fetch_pr_diff)
-    monkeypatch.setattr(main.run_pre_merge_review, "delay", fake_delay)
-    return calls
-
-
-def _stub_post_merge(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
-    calls: list[tuple[Any, ...]] = []
-
-    def fake_delay(*args: Any) -> None:
-        calls.append(args)
-
-    monkeypatch.setattr(main.run_pipeline, "delay", fake_delay)
-    return calls
+    assert response.status_code == 200
+    assert response.json() == {"status": "ignored"}
+    assert pipeline_calls == []
 
 
-@pytest.mark.parametrize("action", ["opened", "synchronize", "reopened"])
-def test_pre_merge_review_runs_for_pr_activity(
+@pytest.mark.parametrize("action", ["opened", "synchronize", "reopened", "edited"])
+def test_webhook_ignores_non_closed_pull_request_actions(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     action: str,
 ) -> None:
-    pre_merge_calls = _stub_pre_merge(monkeypatch)
-    post_merge_calls = _stub_post_merge(monkeypatch)
+    pipeline_calls: list[Any] = []
+    async def fake_pipeline(pr_context: Any) -> bool:
+        pipeline_calls.append(pr_context)
+        return True
 
-    response = _post_webhook(client, _payload(action))
+    monkeypatch.setattr(main, "run_post_merge_pipeline", fake_pipeline)
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "accepted"}
-    assert pre_merge_calls == [("owner/repo", 42, "diff --git a/app.py b/app.py\n+print('hello')")]
-    assert post_merge_calls == []
-
-
-def test_pre_merge_review_runs_for_body_edit(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    pre_merge_calls = _stub_pre_merge(monkeypatch)
-    payload = _payload("edited")
-    payload["changes"] = {"body": {"from": "old body"}}
-
-    response = _post_webhook(client, payload)
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "accepted"}
-    assert len(pre_merge_calls) == 1
-
-
-def test_pre_merge_review_ignores_title_only_edit(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    pre_merge_calls = _stub_pre_merge(monkeypatch)
-    payload = _payload("edited")
-    payload["changes"] = {"title": {"from": "Old title"}}
-
-    response = _post_webhook(client, payload)
+    response = _post_webhook(
+        client,
+        _payload(action, changed_files=["backend/services/orders.py"]),
+    )
 
     assert response.status_code == 200
     assert response.json() == {"status": "ignored"}
-    assert pre_merge_calls == []
+    assert pipeline_calls == []
 
 
-def test_pre_merge_review_ignores_unchanged_body_edit(
+def test_webhook_ignores_closed_unmerged_pull_request(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pre_merge_calls = _stub_pre_merge(monkeypatch)
-    payload = _payload("edited")
-    payload["pull_request"]["body"] = "same body"
-    payload["changes"] = {"body": {"from": "same body"}}
+    pipeline_calls: list[Any] = []
+    async def fake_pipeline(pr_context: Any) -> bool:
+        pipeline_calls.append(pr_context)
+        return True
 
-    response = _post_webhook(client, payload)
+    monkeypatch.setattr(main, "run_post_merge_pipeline", fake_pipeline)
+
+    response = _post_webhook(
+        client,
+        _payload("closed", merged=False, changed_files=["backend/services/orders.py"]),
+    )
 
     assert response.status_code == 200
     assert response.json() == {"status": "ignored"}
-    assert pre_merge_calls == []
+    assert pipeline_calls == []
 
 
-def test_closed_merged_does_not_run_pre_merge_review(
+def test_webhook_accepts_merged_backend_pull_request(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pre_merge_calls = _stub_pre_merge(monkeypatch)
-    post_merge_calls = _stub_post_merge(monkeypatch)
+    pipeline_calls: list[main.PullRequestContext] = []
+    fetch_calls: list[tuple[str, int]] = []
 
-    response = _post_webhook(client, _payload("closed", merged=True, labels=["mergeflow: full"]))
+    async def fake_pipeline(pr_context: main.PullRequestContext) -> bool:
+        pipeline_calls.append(pr_context)
+        return True
+
+    async def fake_fetch_changed_files(repository: str, pr_number: int) -> list[str]:
+        fetch_calls.append((repository, pr_number))
+        return ["backend/services/foo.py"]
+
+    monkeypatch.setattr(main, "fetch_pull_request_changed_files", fake_fetch_changed_files)
+    monkeypatch.setattr(main, "run_post_merge_pipeline", fake_pipeline)
+
+    response = _post_webhook(
+        client,
+        _payload("closed", merged=True, changed_files=[]),
+    )
 
     assert response.status_code == 200
     assert response.json() == {"status": "accepted"}
-    assert pre_merge_calls == []
-    assert len(post_merge_calls) == 1
+    assert fetch_calls == [("owner/repo", 42)]
+    assert pipeline_calls == [
+        main.PullRequestContext(
+            repository="owner/repo",
+            pr_number=42,
+            title="Add feature",
+            merged_at="2026-06-03T17:00:00Z",
+            author="octocat",
+            changed_files=["backend/services/foo.py"],
+            base_branch="master",
+            head_branch="feat/orders",
+            default_branch="main",
+        )
+    ]
 
 
-def test_post_merge_still_requires_mergeflow_label(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    pre_merge_calls = _stub_pre_merge(monkeypatch)
-    post_merge_calls = _stub_post_merge(monkeypatch)
+def test_webhook_ignores_merged_frontend_pull_request(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline_calls: list[main.PullRequestContext] = []
 
-    response = _post_webhook(client, _payload("closed", merged=True))
+    async def fake_pipeline(pr_context: main.PullRequestContext) -> bool:
+        pipeline_calls.append(pr_context)
+        return False
+
+    async def fake_fetch_changed_files(repository: str, pr_number: int) -> list[str]:
+        return ["frontend/components/Button.tsx"]
+
+    monkeypatch.setattr(main, "fetch_pull_request_changed_files", fake_fetch_changed_files)
+    monkeypatch.setattr(main, "run_post_merge_pipeline", fake_pipeline)
+
+    response = _post_webhook(
+        client,
+        _payload("closed", merged=True, changed_files=["backend/services/from-payload-is-ignored.py"]),
+    )
 
     assert response.status_code == 200
     assert response.json() == {"status": "ignored"}
-    assert pre_merge_calls == []
-    assert post_merge_calls == []
+    assert len(pipeline_calls) == 1
 
 
-def test_pre_merge_review_skips_empty_diff(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    pre_merge_calls = _stub_pre_merge(monkeypatch, diff_text="   \n")
+@pytest.mark.parametrize(
+    ("changed_files", "expected"),
+    [
+        (["api/orders.py"], True),
+        (["routes/orders.py"], True),
+        (["controllers/orders.py"], True),
+        (["services/orders.py"], True),
+        (["models/order.py"], True),
+        (["schemas/order.py"], True),
+        (["migrations/20260603_add_orders.sql"], True),
+        (["backend/app.py"], True),
+        (["frontend/components/Button.tsx"], False),
+        ([], False),
+    ],
+)
+def test_backend_relevance_detection(changed_files: list[str], expected: bool) -> None:
+    assert is_backend_relevant_pr(changed_files) is expected
 
-    response = _post_webhook(client, _payload("opened"))
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ignored"}
-    assert pre_merge_calls == []

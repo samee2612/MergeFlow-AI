@@ -1,19 +1,39 @@
 services:
+  redis:
+    image: redis:7-alpine
+    # No host port: api/worker use redis://redis:6379 on the compose network.
+    # Avoids conflict with Homebrew/local Redis on 6379.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   api:
     build: .
     working_dir: /app
     volumes:
       - .:/app
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-local-dev-secret}
     ports:
       - "8000:8000"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
   worker:
@@ -22,16 +42,16 @@ services:
     volumes:
       - .:/app
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-local-dev-secret}
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
     command: celery -A backend.worker.celery_app worker --loglevel=info
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
