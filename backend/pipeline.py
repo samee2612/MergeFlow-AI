@@ -6,6 +6,7 @@ from loguru import logger
 
 from backend.classifier.diff_classifier import BackendDiffClassification, classify_backend_diff
 from backend.generators.api_spec_generator import generate_api_spec_and_test_cases
+from backend.generators.notion_generator import sync_notion_page
 from backend.generators.openapi_generator import generate_openapi_yaml
 from backend.generators.postman_generator import generate_postman_collection
 from backend.github_client import fetch_pull_request_diff
@@ -80,10 +81,17 @@ async def classify_accepted_backend_pr(pr_context: PullRequestContext) -> Backen
         api_spec_result.markdown,
         api_spec_result.target_branch,
     )
-    await generate_postman_collection(
+    postman_result = await generate_postman_collection(
         pr_context,
         openapi_result.yaml_content,
         openapi_result.target_branch,
+    )
+    await sync_notion_page(
+        pr_context,
+        classification,
+        api_spec_result,
+        openapi_result,
+        postman_result,
     )
     return classification
 
