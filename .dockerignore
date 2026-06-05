@@ -1,0 +1,17 @@
+.git
+.github
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.env
+data
+frontend/node_modules
+node_modules
+*.md
+!README.md
+agent-transcripts

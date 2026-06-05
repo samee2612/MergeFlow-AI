@@ -6,7 +6,9 @@ python-dotenv
 loguru
 httpx
 google-generativeai
+google-genai
 chromadb
 sentence-transformers
 networkx
 sendgrid
+pytest

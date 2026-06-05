@@ -17,6 +17,7 @@ GITHUB_API_BASE_URL = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 MAX_DIFF_CHARS = 20000
+SELF_REVIEW_HEADING = "## MergeFlow AI Self Review"
 
 Severity = Literal["warning", "info"]
 
@@ -33,7 +34,7 @@ def run_self_review(repo: str, pr_number: int, diff_text: str) -> list[SelfRevie
     """Run Gemini-powered pre-merge review and post the result on the PR."""
     findings = _analyze_diff_with_gemini(diff_text)
     comment_body = _format_review_comment(findings)
-    _post_pr_comment(repo, pr_number, comment_body)
+    _upsert_pr_comment(repo, pr_number, comment_body)
 
     logger.info(
         "Posted self review comment repo={repo} pr_number={pr_number} finding_count={finding_count}",
@@ -152,14 +153,14 @@ def _optional_string(value: Any) -> str | None:
 def _format_review_comment(findings: list[SelfReviewFinding]) -> str:
     if not findings:
         return (
-            "## MergeFlow AI Self Review\n\n"
+            f"{SELF_REVIEW_HEADING}\n\n"
             "Self review passed. I did not find hardcoded config values, leftover debug notes, "
             "missing tests for new functions/endpoints, or missing API error handling in this diff."
         )
 
     finding_sections = "\n\n".join(_format_finding(index, finding) for index, finding in enumerate(findings, 1))
     return (
-        "## MergeFlow AI Self Review\n\n"
+        f"{SELF_REVIEW_HEADING}\n\n"
         "I found the following items worth checking before merge:\n\n"
         f"{finding_sections}"
     )
@@ -189,25 +190,52 @@ def _format_location(finding: SelfReviewFinding) -> str | None:
     return None
 
 
-def _post_pr_comment(repo: str, pr_number: int, body: str) -> None:
+def _upsert_pr_comment(repo: str, pr_number: int, body: str) -> None:
     token = _get_github_token()
+    existing_comment_id = _find_existing_self_review_comment(repo, pr_number, token)
 
     try:
-        response = httpx.post(
-            f"{GITHUB_API_BASE_URL}/repos/{repo}/issues/{pr_number}/comments",
-            headers=_github_headers(token),
-            json={"body": body},
-            timeout=15,
-        )
+        if existing_comment_id is None:
+            response = httpx.post(
+                f"{GITHUB_API_BASE_URL}/repos/{repo}/issues/{pr_number}/comments",
+                headers=_github_headers(token),
+                json={"body": body},
+                timeout=15,
+            )
+        else:
+            response = httpx.patch(
+                f"{GITHUB_API_BASE_URL}/repos/{repo}/issues/comments/{existing_comment_id}",
+                headers=_github_headers(token),
+                json={"body": body},
+                timeout=15,
+            )
         response.raise_for_status()
     except httpx.HTTPError as error:
         logger.error(
-            "Failed to post self review comment repo={repo} pr_number={pr_number} error={error}",
+            "Failed to upsert self review comment repo={repo} pr_number={pr_number} error={error}",
             repo=repo,
             pr_number=pr_number,
             error=str(error),
         )
         raise
+
+
+def _find_existing_self_review_comment(repo: str, pr_number: int, token: str) -> int | None:
+    response = httpx.get(
+        f"{GITHUB_API_BASE_URL}/repos/{repo}/issues/{pr_number}/comments",
+        headers=_github_headers(token),
+        params={"per_page": 100},
+        timeout=15,
+    )
+    response.raise_for_status()
+
+    for comment in response.json():
+        body = comment.get("body", "")
+        comment_id = comment.get("id")
+        if isinstance(body, str) and body.startswith(SELF_REVIEW_HEADING) and isinstance(comment_id, int):
+            return comment_id
+
+    return None
 
 
 def _get_github_token() -> str:
