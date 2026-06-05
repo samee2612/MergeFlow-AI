@@ -82,3 +82,88 @@ Unified diff patches by file:
 File contents:
 {file_contents}
 """
+
+
+OPENAPI_GENERATOR_SYSTEM_PROMPT = (
+    "You generate valid OpenAPI 3.0 YAML for MergeFlow. "
+    "Use the provided structured API analysis as the source of truth. "
+    "Do not invent unrelated endpoints, integrations, or frontend behavior."
+)
+
+OPENAPI_GENERATOR_USER_PROMPT = """Generate a valid OpenAPI 3.0.3 YAML document for this merged backend PR.
+
+Use the Step 3 structured API analysis below as the main source of truth. Include only endpoints and details supported by the analysis.
+
+OpenAPI requirements:
+- openapi: 3.0.3
+- info.title
+- info.version
+- info.description
+- paths
+- operation summary
+- operation tags
+- auth/security requirements if detected
+- path/query/header parameters if detected
+- requestBody schema if detected
+- example request bodies if detected
+- response status codes
+- response body schemas if detected
+- example responses if detected
+- environment variables under an x-mergeflow-env-vars extension if relevant
+
+Rules:
+- Return YAML only, with no Markdown fences or explanation.
+- Use "Not detected from Step 3 analysis" only in description fields, not as fake schema names.
+- Use empty objects where valid OpenAPI permits them if details are missing.
+- If no endpoint is detected, return a minimal valid OpenAPI document with paths: {{}}.
+- Keep the file readable in GitHub and reusable for future Postman generation.
+
+PR context:
+Repository: {repository}
+PR number: {pr_number}
+Title: {title}
+Classification: {classification}
+Classification summary: {classification_summary}
+
+Step 3 structured API analysis:
+{api_analysis_markdown}
+"""
+
+
+POSTMAN_GENERATOR_SYSTEM_PROMPT = (
+    "You generate valid Postman Collection v2.1 JSON for MergeFlow. "
+    "Use the provided OpenAPI YAML as the source of truth. "
+    "Do not invent unrelated endpoints, integrations, or frontend behavior."
+)
+
+POSTMAN_GENERATOR_USER_PROMPT = """Generate a valid Postman Collection v2.1 JSON document from this OpenAPI YAML.
+
+Use the OpenAPI document as the source of truth. Convert each operation under paths into one Postman request item.
+
+Collection requirements:
+- info.name
+- info.schema: https://schema.getpostman.com/json/collection/v2.1.0/collection.json
+- item array with one request per OpenAPI operation
+- request name from operationId, summary, or METHOD path
+- method
+- URL using {{base_url}} plus the OpenAPI path
+- query/path/header parameters with example values when available
+- auth configuration when OpenAPI security is present
+- request body with example JSON when available
+- tests that check the response code is one of the documented response codes
+
+Rules:
+- Return JSON only, with no Markdown fences or explanation.
+- Keep the file readable and importable into Postman.
+- Use {{base_url}} for the server host.
+- If no endpoint is present, return a minimal valid Postman collection with an empty item array.
+- Preserve useful endpoint details from OpenAPI descriptions, examples, schemas, responses, and auth.
+
+PR context:
+Repository: {repository}
+PR number: {pr_number}
+Title: {title}
+
+OpenAPI YAML:
+{openapi_yaml}
+"""

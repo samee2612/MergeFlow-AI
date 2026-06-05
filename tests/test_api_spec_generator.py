@@ -96,7 +96,7 @@ async def test_generate_api_spec_commits_markdown_to_target_repo(
     monkeypatch.setattr(api_spec_generator, "_generate_markdown_with_gemini", fake_generate)
     monkeypatch.setattr(api_spec_generator, "resolve_target_branch", fake_resolve_branch)
 
-    destination = await api_spec_generator.generate_api_spec_and_test_cases(
+    result = await api_spec_generator.generate_api_spec_and_test_cases(
         _pr_context(),
         _classification(),
         'diff --git a/backend/routes/auth.py b/backend/routes/auth.py\n+@router.post("/login")',
@@ -104,7 +104,10 @@ async def test_generate_api_spec_commits_markdown_to_target_repo(
         artifact_committer=fake_commit,
     )
 
-    assert destination == "https://github.com/owner/repo/blob/master/tests/api-spec-and-test-cases.md"
+    assert result.destination == "https://github.com/owner/repo/blob/master/tests/api-spec-and-test-cases.md"
+    assert result.target_branch == "master"
+    assert result.target_path == "tests/api-spec-and-test-cases.md"
+    assert result.markdown == "# API Spec\n\n## 1. Change Summary\nAdded login endpoint.\n"
     assert fetched_files == [
         ("owner/repo", "backend/routes/auth.py"),
         ("owner/repo", "backend/services/auth_service.py"),
@@ -216,7 +219,7 @@ async def test_generate_api_spec_does_not_crash_when_commit_fails(monkeypatch: p
     monkeypatch.setattr(api_spec_generator, "_generate_markdown_with_gemini", fake_generate)
     monkeypatch.setattr(api_spec_generator, "resolve_target_branch", fake_resolve_branch)
 
-    destination = await api_spec_generator.generate_api_spec_and_test_cases(
+    result = await api_spec_generator.generate_api_spec_and_test_cases(
         _pr_context(),
         _classification(),
         "diff --git a/backend/routes/auth.py b/backend/routes/auth.py",
@@ -224,4 +227,4 @@ async def test_generate_api_spec_does_not_crash_when_commit_fails(monkeypatch: p
         artifact_committer=fake_commit,
     )
 
-    assert destination == "tests/api-spec-and-test-cases.md"
+    assert result.destination == "tests/api-spec-and-test-cases.md"

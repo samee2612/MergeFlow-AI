@@ -58,13 +58,22 @@ class RelatedFileContext:
     content: str
 
 
+@dataclass(frozen=True)
+class ApiSpecGenerationResult:
+    markdown: str
+    destination: str
+    target_path: str
+    target_branch: str
+    commit_result: GitHubCommitResult | None
+
+
 async def generate_api_spec_and_test_cases(
     pr_context: PullRequestContext,
     classification: BackendDiffClassification,
     diff_text: str,
     file_fetcher: FileFetcher = fetch_repository_file_text,
     artifact_committer: ArtifactCommitter = commit_repository_file_text,
-) -> str:
+) -> ApiSpecGenerationResult:
     related_files = select_directly_related_files(pr_context.changed_files)
     patches_by_file = extract_patches_by_file(diff_text)
     file_contexts = await fetch_related_file_contexts(
@@ -109,7 +118,13 @@ async def generate_api_spec_and_test_cases(
             path=target_path,
             error=str(error),
         )
-        return target_path
+        return ApiSpecGenerationResult(
+            markdown=markdown_content,
+            destination=target_path,
+            target_path=target_path,
+            target_branch=target_branch,
+            commit_result=None,
+        )
 
     if not commit_result.success:
         logger.error(
@@ -121,7 +136,13 @@ async def generate_api_spec_and_test_cases(
             local_backup_path=commit_result.local_backup_path,
             error=commit_result.error_message,
         )
-        return commit_result.file_path
+        return ApiSpecGenerationResult(
+            markdown=markdown_content,
+            destination=commit_result.file_path,
+            target_path=target_path,
+            target_branch=target_branch,
+            commit_result=commit_result,
+        )
 
     logger.info(
         "Generated API spec/test-case output in target repo repo={repo} branch={branch} path={path} destination={destination}",
@@ -130,7 +151,13 @@ async def generate_api_spec_and_test_cases(
         path=target_path,
         destination=commit_result.destination,
     )
-    return commit_result.destination
+    return ApiSpecGenerationResult(
+        markdown=markdown_content,
+        destination=commit_result.destination,
+        target_path=target_path,
+        target_branch=target_branch,
+        commit_result=commit_result,
+    )
 
 
 def build_target_repo_artifact_path() -> str:
@@ -306,7 +333,15 @@ Not detected from provided context.
 - Gemini generation did not complete, so endpoint-level coverage needs manual review.
 
 ## 8. Swagger/OpenAPI-Ready Notes
-- Re-run generation after resolving the Gemini error to populate method, path, parameters, schemas, and responses.
+- Downstream generators should inspect the source context below to recover endpoint details when possible.
+
+## 9. Source Context For Downstream Generators
+
+### Patches
+{_format_context_section(file_contexts, "patch")}
+
+### File Contents
+{_format_context_section(file_contexts, "content")}
 """
 
 
