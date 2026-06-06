@@ -5,8 +5,10 @@ from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
+from backend.dashboard_runs import get_dashboard_run, list_dashboard_runs
 from backend.github_client import fetch_pull_request_changed_files
 from backend.pipeline import PullRequestContext, run_post_merge_pipeline
 
@@ -14,6 +16,14 @@ load_dotenv()
 
 app = FastAPI(title="MergeFlow AI")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173").split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def validate_github_signature(payload_body: bytes, signature_header: str | None) -> None:
@@ -62,6 +72,19 @@ def build_pull_request_context(payload: dict[str, Any], changed_files: list[str]
 @app.get("/health")
 async def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/runs")
+async def runs() -> list[dict[str, Any]]:
+    return list_dashboard_runs()
+
+
+@app.get("/runs/{run_id}")
+async def run_detail(run_id: str) -> dict[str, Any]:
+    run = get_dashboard_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
 
 
 @app.post("/webhook")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import escape
+import json
 import os
 import re
 from typing import TYPE_CHECKING, Protocol
@@ -10,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 from loguru import logger
 
 from backend.generators.notion_generator import (
+    build_run_metadata_path,
     extract_markdown_section,
     summarize_openapi,
     summarize_postman_collection,
@@ -116,12 +118,14 @@ async def generate_and_send_release_email(
             recipients=settings.recipients,
             status_code=status_code,
         )
-        return EmailSendResult(
+        result = EmailSendResult(
             success=True,
             recipients=settings.recipients,
             subject=email.subject,
             status_code=status_code,
         )
+        safe_write_email_run_metadata(pr_context, result)
+        return result
     except Exception as error:
         error_message = str(error)
         logger.error(
@@ -130,7 +134,9 @@ async def generate_and_send_release_email(
             pr_number=pr_context.pr_number,
         )
         logger.error("Reason: {reason}", reason=error_message)
-        return EmailSendResult(success=False, recipients=[], error_message=error_message)
+        result = EmailSendResult(success=False, recipients=[], error_message=error_message)
+        safe_write_email_run_metadata(pr_context, result)
+        return result
 
 
 def get_email_settings() -> EmailSettings:
@@ -322,3 +328,47 @@ def artifact_line(label: str, destination: str | None, success: bool, error_mess
     if error_message:
         return f"[failed] {label}: {error_message}"
     return f"[missing] {label}"
+
+
+def write_email_run_metadata(pr_context: PullRequestContext, result: EmailSendResult) -> str:
+    metadata_path = build_run_metadata_path(pr_context)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = _read_json_object(metadata_path)
+    existing["email"] = {
+        "success": result.success,
+        "recipients": result.recipients,
+        "subject": result.subject,
+        "status_code": result.status_code,
+        "error_message": result.error_message,
+    }
+    metadata_path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    logger.info(
+        "Saved MergeFlow email metadata repo={repo} pr_number={pr_number} metadata_path={metadata_path}",
+        repo=pr_context.repository,
+        pr_number=pr_context.pr_number,
+        metadata_path=str(metadata_path),
+    )
+    return str(metadata_path)
+
+
+def safe_write_email_run_metadata(pr_context: PullRequestContext, result: EmailSendResult) -> str | None:
+    try:
+        return write_email_run_metadata(pr_context, result)
+    except Exception as error:
+        logger.exception(
+            "Could not save MergeFlow email metadata repo={repo} pr_number={pr_number} error={error}",
+            repo=pr_context.repository,
+            pr_number=pr_context.pr_number,
+            error=str(error),
+        )
+        return None
+
+
+def _read_json_object(path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
