@@ -8,8 +8,9 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from backend.dashboard_runs import get_dashboard_run, list_dashboard_runs
+from backend.dashboard_runs import get_dashboard_run, list_dashboard_runs, list_dashboard_runs_for_service, list_dashboard_runs_for_team
 from backend.github_client import fetch_pull_request_changed_files
+from backend.organization import get_organization
 from backend.pipeline import PullRequestContext, run_post_merge_pipeline
 
 load_dotenv()
@@ -79,6 +80,21 @@ async def runs() -> list[dict[str, Any]]:
     return list_dashboard_runs()
 
 
+@app.get("/organization")
+async def organization() -> dict[str, Any]:
+    return get_organization()
+
+
+@app.get("/teams/{team_id}/runs")
+async def team_runs(team_id: str) -> list[dict[str, Any]]:
+    return list_dashboard_runs_for_team(team_id)
+
+
+@app.get("/services/{service_id}/runs")
+async def service_runs(service_id: str) -> list[dict[str, Any]]:
+    return list_dashboard_runs_for_service(service_id)
+
+
 @app.get("/runs/{run_id}")
 async def run_detail(run_id: str) -> dict[str, Any]:
     run = get_dashboard_run(run_id)
@@ -131,4 +147,4 @@ async def github_webhook(
     pr_context = build_pull_request_context(payload, changed_files)
     accepted = await run_post_merge_pipeline(pr_context)
 
-    return {"status": "accepted" if accepted else "ignored"}
+    return {"status": "accepted" if accepted else "failed"}

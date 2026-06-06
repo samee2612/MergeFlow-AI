@@ -11,15 +11,16 @@ from typing import TYPE_CHECKING, Protocol
 from loguru import logger
 
 from backend.generators.notion_generator import (
-    build_run_metadata_path,
     extract_markdown_section,
     summarize_openapi,
     summarize_postman_collection,
 )
+from backend.run_store import build_run_metadata_path
 
 if TYPE_CHECKING:
     from backend.classifier.diff_classifier import BackendDiffClassification
     from backend.generators.api_spec_generator import ApiSpecGenerationResult
+    from backend.generators.notion_draft_generator import NotionDocumentationResult
     from backend.generators.notion_generator import NotionSyncResult
     from backend.generators.openapi_generator import OpenApiGenerationResult
     from backend.generators.postman_generator import PostmanGenerationResult
@@ -82,7 +83,7 @@ async def generate_and_send_release_email(
     api_spec_result: ApiSpecGenerationResult,
     openapi_result: OpenApiGenerationResult,
     postman_result: PostmanGenerationResult,
-    notion_result: NotionSyncResult,
+    notion_result: NotionDocumentationResult | NotionSyncResult,
     email_client: ReleaseEmailClient | None = None,
 ) -> EmailSendResult:
     logger.info(
@@ -180,7 +181,7 @@ def build_release_email(
     api_spec_result: ApiSpecGenerationResult,
     openapi_result: OpenApiGenerationResult,
     postman_result: PostmanGenerationResult,
-    notion_result: NotionSyncResult,
+    notion_result: NotionDocumentationResult | NotionSyncResult,
     recipients: list[str],
     generated_at: datetime | None = None,
 ) -> ReleaseEmail:
@@ -209,7 +210,7 @@ def build_release_report(
     api_spec_result: ApiSpecGenerationResult,
     openapi_result: OpenApiGenerationResult,
     postman_result: PostmanGenerationResult,
-    notion_result: NotionSyncResult,
+    notion_result: NotionDocumentationResult | NotionSyncResult,
     timestamp: str,
 ) -> dict[str, object]:
     openapi_summary = summarize_openapi(openapi_result.yaml_content)
@@ -221,7 +222,8 @@ def build_release_report(
         risks = extract_list_items(extract_markdown_section(api_spec_result.markdown, "Edge Cases"))
 
     artifacts = [
-        artifact_line("Notion Documentation", notion_result.page_url, notion_result.success, notion_result.error_message),
+        artifact_line("PR Documentation Draft", _notion_pr_review_url(notion_result), notion_result.success, notion_result.error_message),
+        artifact_line("Service Documentation", _notion_service_page_url(notion_result), notion_result.success, notion_result.error_message),
         artifact_line("OpenAPI Specification", openapi_result.destination, True, None),
         artifact_line("Postman Collection", postman_result.destination, True, None),
     ]
@@ -328,6 +330,14 @@ def artifact_line(label: str, destination: str | None, success: bool, error_mess
     if error_message:
         return f"[failed] {label}: {error_message}"
     return f"[missing] {label}"
+
+
+def _notion_pr_review_url(notion_result: NotionDocumentationResult | NotionSyncResult) -> str | None:
+    return getattr(notion_result, "pr_review_page_url", None) or getattr(notion_result, "page_url", None)
+
+
+def _notion_service_page_url(notion_result: NotionDocumentationResult | NotionSyncResult) -> str | None:
+    return getattr(notion_result, "service_page_url", None)
 
 
 def write_email_run_metadata(pr_context: PullRequestContext, result: EmailSendResult) -> str:

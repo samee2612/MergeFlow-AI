@@ -11,7 +11,7 @@ from google.genai import types
 from loguru import logger
 import yaml
 
-from backend.classifier.diff_classifier import get_gemini_api_version
+from backend.gemini_config import get_gemini_api_key, get_gemini_api_version, get_gemini_model_candidates
 from backend.generators.prompts import POSTMAN_GENERATOR_SYSTEM_PROMPT, POSTMAN_GENERATOR_USER_PROMPT
 from backend.github_client import (
     GitHubCommitResult,
@@ -351,26 +351,10 @@ def build_postman_prompt(pr_context: PullRequestContext, openapi_yaml: str) -> s
     )
 
 
-def get_postman_model_candidates() -> list[str]:
-    primary = os.getenv("GEMINI_POSTMAN_MODEL") or os.getenv("GEMINI_OPENAPI_MODEL") or DEFAULT_POSTMAN_MODEL
-    fallback = (
-        os.getenv("GEMINI_POSTMAN_FALLBACK_MODEL")
-        or os.getenv("GEMINI_OPENAPI_FALLBACK_MODEL")
-        or FALLBACK_POSTMAN_MODEL
-    )
-    candidates = [primary]
-    if fallback not in candidates:
-        candidates.append(fallback)
-    return candidates
-
-
 def _generate_postman_collection_with_gemini(pr_context: PullRequestContext, openapi_yaml: str) -> str:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-
+    api_key = get_gemini_api_key()
     api_version = get_gemini_api_version()
-    models = get_postman_model_candidates()
+    models = get_gemini_model_candidates()
     logger.info(
         "Configuring Gemini Postman generator api_version={api_version} models={models}",
         api_version=api_version,

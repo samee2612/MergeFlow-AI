@@ -15,7 +15,7 @@ load_dotenv()
 
 GITHUB_API_BASE_URL = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+from backend.gemini_config import get_gemini_api_key, get_gemini_model
 MAX_DIFF_CHARS = 20000
 SELF_REVIEW_HEADING = "## MergeFlow AI Self Review"
 
@@ -46,13 +46,11 @@ def run_self_review(repo: str, pr_number: int, diff_text: str) -> list[SelfRevie
 
 
 def _analyze_diff_with_gemini(diff_text: str) -> list[SelfReviewFinding]:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
+    api_key = get_gemini_api_key()
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        GEMINI_MODEL,
+        get_gemini_model(),
         system_instruction=(
             "You are MergeFlow AI's pre-merge self-review bot. "
             "Analyze only the added or changed lines in the diff. "

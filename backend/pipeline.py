@@ -5,24 +5,15 @@ from dataclasses import dataclass
 from loguru import logger
 
 from backend.classifier.diff_classifier import BackendDiffClassification, classify_backend_diff
+from backend.classifier.scope_classifier import classify_change_scope
 from backend.generators.api_spec_generator import generate_api_spec_and_test_cases
 from backend.generators.email_generator import generate_and_send_release_email
-from backend.generators.notion_generator import sync_notion_page
+from backend.generators.notion_draft_generator import NotionDocumentationResult, update_notion_documentation
 from backend.generators.openapi_generator import generate_openapi_yaml
 from backend.generators.postman_generator import generate_postman_collection
 from backend.github_client import fetch_pull_request_diff
-
-
-BACKEND_PATH_MARKERS = (
-    "api/",
-    "routes/",
-    "controllers/",
-    "services/",
-    "models/",
-    "schemas/",
-    "migrations/",
-    "backend/",
-)
+from backend.run_store import create_run, update_run
+from backend.service_resolver import ServiceResolution, resolve_service
 
 
 @dataclass(frozen=True)
@@ -39,11 +30,7 @@ class PullRequestContext:
 
 
 async def run_post_merge_pipeline(pr_context: PullRequestContext) -> bool:
-    """Entry point for merged backend PR processing.
-
-    Future artifact generators should hang off this function after the PR has
-    been accepted as backend-relevant.
-    """
+    """Process a merged PR: resolve service, classify scope, automate or track."""
     logger.info(
         "Post-merge pipeline received repo={repo} pr_number={pr_number} title={title} "
         "merged_at={merged_at} author={author} changed_files={changed_files}",
@@ -55,16 +42,73 @@ async def run_post_merge_pipeline(pr_context: PullRequestContext) -> bool:
         changed_files=pr_context.changed_files,
     )
 
-    if is_backend_relevant_pr(pr_context.changed_files):
-        logger.info("Backend PR accepted for MergeFlow")
-        await classify_accepted_backend_pr(pr_context)
+    create_run(pr_context)
+
+    try:
+        service = resolve_service(
+            pr_context.repository,
+            pr_title=pr_context.title,
+            changed_files=pr_context.changed_files,
+        )
+        update_run(
+            pr_context,
+            status="RESOLVED_SERVICE",
+            serviceContext=service.as_dict(),
+            **service.as_dict(),
+        )
+
+        scope = classify_change_scope(
+            pr_context.changed_files,
+            pr_context.title,
+            pr_context.repository,
+        )
+        update_run(
+            pr_context,
+            status="CLASSIFIED",
+            changeScope=scope.scope,
+            action=scope.action,
+            classification={
+                "changeTypes": scope.change_types,
+                "summary": scope.summary,
+            },
+        )
+
+        if scope.action == "track_only":
+            logger.info(
+                "PR tracked without full automation repo={repo} pr_number={pr_number} scope={scope}",
+                repo=pr_context.repository,
+                pr_number=pr_context.pr_number,
+                scope=scope.scope,
+            )
+            update_run(pr_context, status="TRACKED_ONLY")
+            return True
+
+        update_run(pr_context, status="GENERATING_ARTIFACTS")
+        classification = await classify_accepted_backend_pr(pr_context, service)
+        update_run(
+            pr_context,
+            status="SUCCESS",
+            classification={
+                "changeTypes": classification.change_types,
+                "summary": classification.summary,
+            },
+        )
         return True
+    except Exception as error:
+        logger.exception(
+            "Post-merge pipeline failed repo={repo} pr_number={pr_number} error={error}",
+            repo=pr_context.repository,
+            pr_number=pr_context.pr_number,
+            error=str(error),
+        )
+        update_run(pr_context, status="FAILED", errorMessage=str(error))
+        return False
 
-    logger.info("PR ignored - not backend related")
-    return False
 
-
-async def classify_accepted_backend_pr(pr_context: PullRequestContext) -> BackendDiffClassification:
+async def classify_accepted_backend_pr(
+    pr_context: PullRequestContext,
+    service: ServiceResolution,
+) -> BackendDiffClassification:
     if pr_context.pr_number is None:
         logger.warning("Skipping PR classification because PR number is missing")
         return BackendDiffClassification(
@@ -87,8 +131,9 @@ async def classify_accepted_backend_pr(pr_context: PullRequestContext) -> Backen
         openapi_result.yaml_content,
         openapi_result.target_branch,
     )
-    notion_result = await sync_notion_page(
+    notion_result = await update_notion_documentation(
         pr_context,
+        service,
         classification,
         api_spec_result,
         openapi_result,
@@ -115,9 +160,5 @@ def log_pr_classification(classification: BackendDiffClassification) -> None:
 
 
 def is_backend_relevant_pr(changed_files: list[str]) -> bool:
-    return any(_is_backend_path(file_path) for file_path in changed_files)
-
-
-def _is_backend_path(file_path: str) -> bool:
-    normalized_path = file_path.replace("\\", "/").lstrip("/").lower()
-    return any(marker in normalized_path for marker in BACKEND_PATH_MARKERS)
+    scope = classify_change_scope(changed_files)
+    return scope.action == "generate_api_artifacts"

@@ -44,6 +44,8 @@ a {
 }
 
 .panel h2,
+.team-card h3,
+.service-card h3,
 .artifact-card h3,
 .endpoint-card h3,
 .test-card h3 {
@@ -137,9 +139,24 @@ a {
   color: #92400e;
 }
 
+.status--tracked_only {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.status--ignored {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
 .status--failed {
   background: #fee2e2;
   color: #991b1b;
+}
+
+.status--empty {
+  background: #e5e7eb;
+  color: #475569;
 }
 
 .back-link {
@@ -151,6 +168,10 @@ a {
 }
 
 .status-grid,
+.metrics-grid,
+.team-grid,
+.service-grid,
+.workflow-grid,
 .artifact-grid,
 .endpoint-list,
 .test-list {
@@ -158,6 +179,105 @@ a {
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   margin-top: 16px;
+}
+
+.metrics-grid {
+  margin-bottom: 20px;
+}
+
+.metric-card,
+.team-card,
+.service-card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 18px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+  color: inherit;
+  padding: 20px;
+  text-decoration: none;
+}
+
+.metric-card strong {
+  display: block;
+  font-size: 34px;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+
+.metric-card span,
+.team-card p,
+.service-card p {
+  color: #64748b;
+}
+
+.metric-card__text {
+  font-size: 17px !important;
+  letter-spacing: -0.02em !important;
+  line-height: 1.3 !important;
+  word-break: break-word;
+}
+
+.metric-card__status {
+  font-size: 22px !important;
+}
+
+.metric-card__status--success {
+  color: #166534;
+}
+
+.metric-card__status--needs_attention,
+.metric-card__status--empty {
+  color: #92400e;
+}
+
+.team-card,
+.service-card {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  justify-content: space-between;
+  min-height: 180px;
+  transition:
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+
+.team-card:hover,
+.service-card:hover {
+  border-color: #94a3b8;
+  transform: translateY(-1px);
+}
+
+.service-card__footer {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.repo-label {
+  background: #f1f5f9;
+  border-radius: 999px;
+  color: #334155;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  max-width: 70%;
+  overflow: hidden;
+  padding: 6px 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-grid span {
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  color: #334155;
+  font-weight: 800;
+  padding: 12px 14px;
+  text-align: center;
 }
 
 .status-item,
@@ -192,6 +312,10 @@ a {
   margin: 10px 0 18px;
 }
 
+.tag-row--compact {
+  margin: 8px 0 0;
+}
+
 .tag,
 .method {
   background: #eef2ff;
@@ -201,6 +325,16 @@ a {
   font-size: 12px;
   font-weight: 800;
   padding: 6px 10px;
+}
+
+.tag--muted {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.panel--notice {
+  background: #eff6ff;
+  border-color: #bfdbfe;
 }
 
 .artifact-card {
@@ -235,7 +369,8 @@ a {
 
 @media (max-width: 640px) {
   .run-card,
-  .artifact-card {
+  .artifact-card,
+  .service-card__footer {
     align-items: flex-start;
     flex-direction: column;
   }

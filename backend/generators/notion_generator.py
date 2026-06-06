@@ -11,7 +11,7 @@ import httpx
 from loguru import logger
 import yaml
 
-from backend.github_client import get_runs_root
+from backend.run_store import build_run_metadata_path
 
 if TYPE_CHECKING:
     from backend.classifier.diff_classifier import BackendDiffClassification
@@ -474,12 +474,6 @@ def safe_write_notion_run_metadata(pr_context: PullRequestContext, result: Notio
         return None
 
 
-def build_run_metadata_path(pr_context: PullRequestContext) -> Path:
-    repo_parts = [part for part in pr_context.repository.split("/") if part]
-    pr_part = str(pr_context.pr_number) if pr_context.pr_number is not None else "unknown-pr"
-    return get_runs_root().joinpath(*repo_parts, pr_part, "mergeflow_run_metadata.json")
-
-
 def _read_json_object(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -504,6 +498,17 @@ def _heading_1(text: str) -> dict[str, Any]:
 
 def _heading_2(text: str) -> dict[str, Any]:
     return {"object": "block", "type": "heading_2", "heading_2": {"rich_text": [_rich_text(text)]}}
+
+
+def _code_block(content: str, language: str = "plain text") -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "code",
+        "code": {
+            "rich_text": [_rich_text(content)],
+            "language": language,
+        },
+    }
 
 
 def _paragraphs(text: str) -> list[dict[str, Any]]:

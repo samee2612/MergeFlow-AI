@@ -211,7 +211,7 @@ def test_webhook_ignores_merged_frontend_pull_request(
 
     async def fake_pipeline(pr_context: main.PullRequestContext) -> bool:
         pipeline_calls.append(pr_context)
-        return False
+        return True
 
     async def fake_fetch_changed_files(repository: str, pr_number: int) -> list[str]:
         return ["frontend/components/Button.tsx"]
@@ -225,7 +225,7 @@ def test_webhook_ignores_merged_frontend_pull_request(
     )
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ignored"}
+    assert response.json() == {"status": "accepted"}
     assert len(pipeline_calls) == 1
 
 
@@ -238,7 +238,7 @@ def test_webhook_ignores_merged_frontend_pull_request(
         (["services/orders.py"], True),
         (["models/order.py"], True),
         (["schemas/order.py"], True),
-        (["migrations/20260603_add_orders.sql"], True),
+        (["migrations/20260603_add_orders.sql"], False),
         (["backend/app.py"], True),
         (["frontend/components/Button.tsx"], False),
         ([], False),

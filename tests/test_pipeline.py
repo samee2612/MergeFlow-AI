@@ -2,8 +2,9 @@ import pytest
 
 from backend import pipeline
 from backend.classifier.diff_classifier import BackendDiffClassification
+from backend.classifier.scope_classifier import ChangeScopeClassification
 from backend.generators.api_spec_generator import ApiSpecGenerationResult
-from backend.generators.notion_generator import NotionSyncResult
+from backend.generators.notion_draft_generator import NotionDocumentationResult
 from backend.generators.openapi_generator import OpenApiGenerationResult
 from backend.generators.postman_generator import PostmanGenerationResult
 from backend.github_client import GitHubCommitResult
@@ -16,15 +17,7 @@ async def test_backend_pr_fetches_diff_and_classifies(monkeypatch: pytest.Monkey
     generator_calls: list[tuple[pipeline.PullRequestContext, BackendDiffClassification, str]] = []
     openapi_calls: list[tuple[pipeline.PullRequestContext, BackendDiffClassification, str, str]] = []
     postman_calls: list[tuple[pipeline.PullRequestContext, str, str]] = []
-    notion_calls: list[
-        tuple[
-            pipeline.PullRequestContext,
-            BackendDiffClassification,
-            ApiSpecGenerationResult,
-            OpenApiGenerationResult,
-            PostmanGenerationResult,
-        ]
-    ] = []
+    notion_calls: list[tuple[object, ...]] = []
 
     async def fake_fetch_diff(repository: str, pr_number: int) -> str:
         diff_calls.append((repository, pr_number))
@@ -98,22 +91,40 @@ async def test_backend_pr_fetches_diff_and_classifies(monkeypatch: pytest.Monkey
             ),
         )
 
-    async def fake_sync_notion(
+    async def fake_update_notion(
         pr_context: pipeline.PullRequestContext,
+        service: pipeline.ServiceResolution,
         classification: BackendDiffClassification,
         api_spec_result: ApiSpecGenerationResult,
         openapi_result: OpenApiGenerationResult,
         postman_result: PostmanGenerationResult,
-    ) -> NotionSyncResult:
-        notion_calls.append((pr_context, classification, api_spec_result, openapi_result, postman_result))
-        return NotionSyncResult(success=True, action="created", page_id="page-1", page_url="https://notion.so/page-1")
+    ) -> NotionDocumentationResult:
+        notion_calls.append((pr_context, service, classification, api_spec_result, openapi_result, postman_result))
+        return NotionDocumentationResult(
+            success=True,
+            action="service_updated_pr_created",
+            pr_review_page_id="pr-page-1",
+            pr_review_page_url="https://notion.so/pr-page-1",
+            service_page_id="service-page-1",
+            service_page_url="https://notion.so/service-page-1",
+        )
 
     monkeypatch.setattr(pipeline, "fetch_pull_request_diff", fake_fetch_diff)
     monkeypatch.setattr(pipeline, "classify_backend_diff", fake_classify)
+    monkeypatch.setattr(
+        pipeline,
+        "classify_change_scope",
+        lambda changed_files, pr_title="", repository="": ChangeScopeClassification(
+            scope="api",
+            action="generate_api_artifacts",
+            summary="Backend/API api change across 1 file(s) \"Update service\".",
+            change_types=["API"],
+        ),
+    )
     monkeypatch.setattr(pipeline, "generate_api_spec_and_test_cases", fake_generate)
     monkeypatch.setattr(pipeline, "generate_openapi_yaml", fake_generate_openapi)
     monkeypatch.setattr(pipeline, "generate_postman_collection", fake_generate_postman)
-    monkeypatch.setattr(pipeline, "sync_notion_page", fake_sync_notion)
+    monkeypatch.setattr(pipeline, "update_notion_documentation", fake_update_notion)
 
     accepted = await pipeline.run_post_merge_pipeline(
         pipeline.PullRequestContext(
@@ -148,9 +159,9 @@ async def test_backend_pr_fetches_diff_and_classifies(monkeypatch: pytest.Monkey
         )
     ]
     assert len(notion_calls) == 1
-    assert notion_calls[0][2].markdown == "# API Spec\n\n## 4. API Specification Snapshot\n- method: GET\n- path: /foo\n"
-    assert notion_calls[0][3].yaml_content == "openapi: 3.0.3\ninfo:\n  title: Test API\n  version: 0.1.0\npaths: {}\n"
-    assert notion_calls[0][4].collection_json.startswith('{"info"')
+    assert notion_calls[0][3].markdown == "# API Spec\n\n## 4. API Specification Snapshot\n- method: GET\n- path: /foo\n"
+    assert notion_calls[0][4].yaml_content == "openapi: 3.0.3\ninfo:\n  title: Test API\n  version: 0.1.0\npaths: {}\n"
+    assert notion_calls[0][5].collection_json.startswith('{"info"')
 
 
 @pytest.mark.asyncio
@@ -159,6 +170,16 @@ async def test_non_backend_pr_does_not_fetch_diff(monkeypatch: pytest.MonkeyPatc
         raise AssertionError("Diff should not be fetched for non-backend PRs")
 
     monkeypatch.setattr(pipeline, "fetch_pull_request_diff", fake_fetch_diff)
+    monkeypatch.setattr(
+        pipeline,
+        "classify_change_scope",
+        lambda changed_files, pr_title="", repository="": ChangeScopeClassification(
+            scope="frontend",
+            action="track_only",
+            summary="Tracked frontend change across 1 file(s) \"Update UI\".",
+            change_types=["Frontend"],
+        ),
+    )
 
     accepted = await pipeline.run_post_merge_pipeline(
         pipeline.PullRequestContext(
@@ -171,4 +192,4 @@ async def test_non_backend_pr_does_not_fetch_diff(monkeypatch: pytest.MonkeyPatc
         )
     )
 
-    assert accepted is False
+    assert accepted is True

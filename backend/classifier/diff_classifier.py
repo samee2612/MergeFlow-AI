@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import os
 from typing import Any, Literal
 
 from dotenv import load_dotenv
@@ -13,6 +12,11 @@ from google.genai import types
 from loguru import logger
 
 from backend.classifier.prompts import BACKEND_CLASSIFIER_SYSTEM_PROMPT, BACKEND_CLASSIFIER_USER_PROMPT
+from backend.gemini_config import (
+    get_gemini_api_key,
+    get_gemini_api_version,
+    get_gemini_model_candidates,
+)
 
 load_dotenv()
 
@@ -40,11 +44,6 @@ VALID_BACKEND_CHANGE_TYPES: set[BackendChangeType] = {
     "Unknown",
 }
 
-DEFAULT_CLASSIFIER_MODEL = "gemini-2.5-flash-lite"
-FALLBACK_CLASSIFIER_MODEL = "gemini-2.5-flash"
-# v1beta matches the Gemini Developer API wire format (e.g. systemInstruction).
-# The v1 endpoint rejects that field and returns 400 for classification requests.
-DEFAULT_GEMINI_API_VERSION = "v1beta"
 MAX_DIFF_CHARS = 30000
 
 
@@ -80,37 +79,14 @@ def classify_diff(diff_text: str, changed_files: list[str]) -> BackendDiffClassi
     return classify_backend_diff(diff_text, changed_files)
 
 
-def get_classifier_model() -> str:
-    """Primary classifier model from env or default."""
-    return os.getenv("GEMINI_CLASSIFIER_MODEL") or DEFAULT_CLASSIFIER_MODEL
-
-
-def get_classifier_fallback_model() -> str:
-    return os.getenv("GEMINI_CLASSIFIER_FALLBACK_MODEL") or FALLBACK_CLASSIFIER_MODEL
-
-
-def get_classifier_model_candidates() -> list[str]:
-    candidates = [get_classifier_model()]
-    fallback_model = get_classifier_fallback_model()
-    if fallback_model not in candidates:
-        candidates.append(fallback_model)
-    return candidates
-
-
-def get_gemini_api_version() -> str:
-    return os.getenv("GEMINI_API_VERSION", DEFAULT_GEMINI_API_VERSION)
-
-
 def _classify_with_gemini(diff_text: str, changed_files: list[str]) -> BackendDiffClassification:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-
+    api_key = get_gemini_api_key()
     api_version = get_gemini_api_version()
+    models = get_gemini_model_candidates()
     logger.info(
         "Configuring Gemini classifier api_version={api_version} models={models}",
         api_version=api_version,
-        models=get_classifier_model_candidates(),
+        models=models,
     )
 
     client = genai.Client(
@@ -124,7 +100,7 @@ def _classify_with_gemini(diff_text: str, changed_files: list[str]) -> BackendDi
     config = _build_generate_content_config()
 
     last_error: Exception | None = None
-    for model_name in get_classifier_model_candidates():
+    for model_name in models:
         logger.info("Using Gemini classifier model model={model}", model=model_name)
         try:
             response = client.models.generate_content(
@@ -135,7 +111,7 @@ def _classify_with_gemini(diff_text: str, changed_files: list[str]) -> BackendDi
             return _parse_classification_json(_extract_response_text(response))
         except Exception as error:
             last_error = error
-            if _should_try_fallback_model(error, model_name):
+            if _should_try_fallback_model(error, model_name, models):
                 logger.warning(
                     "Gemini classifier model unavailable, trying fallback model={model} error={error}",
                     model=model_name,
@@ -158,8 +134,8 @@ def _build_generate_content_config() -> types.GenerateContentConfig:
     )
 
 
-def _should_try_fallback_model(error: Exception, model_name: str) -> bool:
-    if model_name == get_classifier_model_candidates()[-1]:
+def _should_try_fallback_model(error: Exception, model_name: str, models: list[str]) -> bool:
+    if model_name == models[-1]:
         return False
 
     error_text = str(error).lower()
