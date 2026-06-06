@@ -1,6 +1,7 @@
 import pytest
 
 from backend.classifier import diff_classifier
+from backend import gemini_config
 
 
 class FakeResponse:
@@ -30,8 +31,8 @@ def test_classify_backend_diff_returns_structured_json(monkeypatch: pytest.Monke
     created_models.clear()
     client_api_versions.clear()
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.delenv("GEMINI_CLASSIFIER_MODEL", raising=False)
-    monkeypatch.delenv("GEMINI_CLASSIFIER_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_FALLBACK_MODEL", raising=False)
     monkeypatch.delenv("GEMINI_API_VERSION", raising=False)
     monkeypatch.setattr(diff_classifier.genai, "Client", FakeClient)
 
@@ -46,15 +47,15 @@ def test_classify_backend_diff_returns_structured_json(monkeypatch: pytest.Monke
     assert client_api_versions == ["v1beta"]
 
 
-def test_classifier_model_and_api_version_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GEMINI_CLASSIFIER_MODEL", "gemini-2.5-flash")
-    monkeypatch.setenv("GEMINI_CLASSIFIER_FALLBACK_MODEL", "gemini-2.5-flash-lite")
+def test_gemini_model_and_api_version_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
     monkeypatch.setenv("GEMINI_API_VERSION", "v1beta")
 
-    assert diff_classifier.get_classifier_model() == "gemini-2.5-flash"
-    assert diff_classifier.get_classifier_fallback_model() == "gemini-2.5-flash-lite"
-    assert diff_classifier.get_gemini_api_version() == "v1beta"
-    assert diff_classifier.get_classifier_model_candidates() == ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    assert gemini_config.get_gemini_model() == "gemini-2.5-flash"
+    assert gemini_config.get_gemini_fallback_model() == "gemini-2.5-flash-lite"
+    assert gemini_config.get_gemini_api_version() == "v1beta"
+    assert gemini_config.get_gemini_model_candidates() == ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
 
 
 def test_classifier_tries_fallback_model_on_model_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,8 +73,8 @@ def test_classifier_tries_fallback_model_on_model_error(monkeypatch: pytest.Monk
             self.models = FailingThenSuccessModels()
 
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.delenv("GEMINI_CLASSIFIER_MODEL", raising=False)
-    monkeypatch.delenv("GEMINI_CLASSIFIER_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_FALLBACK_MODEL", raising=False)
     monkeypatch.setattr(diff_classifier.genai, "Client", FakeClientWithFallback)
 
     classification = diff_classifier.classify_backend_diff(

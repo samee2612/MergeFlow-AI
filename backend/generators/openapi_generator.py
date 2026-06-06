@@ -10,7 +10,8 @@ from google.genai import types
 from loguru import logger
 import yaml
 
-from backend.classifier.diff_classifier import BackendDiffClassification, get_gemini_api_version
+from backend.classifier.diff_classifier import BackendDiffClassification
+from backend.gemini_config import get_gemini_api_key, get_gemini_api_version, get_gemini_model_candidates
 from backend.generators.prompts import OPENAPI_GENERATOR_SYSTEM_PROMPT, OPENAPI_GENERATOR_USER_PROMPT
 from backend.github_client import (
     GitHubCommitResult,
@@ -621,30 +622,14 @@ def build_openapi_prompt(
     )
 
 
-def get_openapi_model_candidates() -> list[str]:
-    primary = os.getenv("GEMINI_OPENAPI_MODEL") or os.getenv("GEMINI_API_SPEC_MODEL") or DEFAULT_OPENAPI_MODEL
-    fallback = (
-        os.getenv("GEMINI_OPENAPI_FALLBACK_MODEL")
-        or os.getenv("GEMINI_API_SPEC_FALLBACK_MODEL")
-        or FALLBACK_OPENAPI_MODEL
-    )
-    candidates = [primary]
-    if fallback not in candidates:
-        candidates.append(fallback)
-    return candidates
-
-
 def _generate_openapi_yaml_with_gemini(
     pr_context: PullRequestContext,
     classification: BackendDiffClassification,
     api_analysis_markdown: str,
 ) -> str:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-
+    api_key = get_gemini_api_key()
     api_version = get_gemini_api_version()
-    models = get_openapi_model_candidates()
+    models = get_gemini_model_candidates()
     logger.info(
         "Configuring Gemini OpenAPI generator api_version={api_version} models={models}",
         api_version=api_version,

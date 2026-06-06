@@ -37,8 +37,8 @@ export function RunDetails({ runId }: RunDetailsProps) {
   if (error || run === null) {
     return (
       <main className="page">
-        <a className="back-link" href="/">
-          Back to runs
+        <a className="back-link" href={run?.serviceId ? `/services/${run.serviceId}` : "/"}>
+          Back to service
         </a>
         <p className="error">{error || "Run not found."}</p>
       </main>
@@ -47,17 +47,30 @@ export function RunDetails({ runId }: RunDetailsProps) {
 
   return (
     <main className="page">
-      <a className="back-link" href="/">
-        Back to runs
+      <a className="back-link" href={`/services/${run.serviceId}`}>
+        Back to {run.serviceName}
       </a>
 
       <header className="hero">
-        <p className="eyebrow">PR #{run.prNumber}</p>
+        <p className="eyebrow">
+          {run.teamName} / {run.serviceName} / PR #{run.prNumber}
+        </p>
         <h1>{run.prTitle}</h1>
         <p className="muted">
-          {run.repository} · <span className={`status status--${run.status.toLowerCase()}`}>{run.status}</span>
+          {run.repository} · <span className={`status status--${run.status.toLowerCase()}`}>{run.status.replace(/_/g, " ")}</span>
+          {run.changeScope ? <> · {run.changeScope.toUpperCase()}</> : null}
         </p>
       </header>
+
+      {run.status === "TRACKED_ONLY" ? (
+        <section className="panel panel--notice">
+          <h2>Tracked Only</h2>
+          <p>
+            MergeFlow recorded this PR on the service dashboard. Full artifact generation (OpenAPI, Postman, Notion, email)
+            is enabled for backend/API changes only.
+          </p>
+        </section>
+      ) : null}
 
       <section className="panel">
         <h2>Pipeline Status</h2>
@@ -89,9 +102,14 @@ export function RunDetails({ runId }: RunDetailsProps) {
 
       <section className="panel">
         <h2>Generated Artifacts</h2>
-        <ArtifactLinks artifacts={run.artifacts} />
+        {run.status === "TRACKED_ONLY" ? (
+          <p className="muted">No artifacts generated for this tracked-only change.</p>
+        ) : (
+          <ArtifactLinks artifacts={run.artifacts} />
+        )}
       </section>
 
+      {run.apiOverview.length > 0 ? (
       <section className="panel">
         <h2>API Overview</h2>
         <div className="endpoint-list">
@@ -118,7 +136,9 @@ export function RunDetails({ runId }: RunDetailsProps) {
           ))}
         </div>
       </section>
+      ) : null}
 
+      {run.testCases.length > 0 ? (
       <section className="panel">
         <h2>Generated Test Cases</h2>
         <div className="test-list">
@@ -130,6 +150,7 @@ export function RunDetails({ runId }: RunDetailsProps) {
           ))}
         </div>
       </section>
+      ) : null}
     </main>
   );
 }

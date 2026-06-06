@@ -9,7 +9,8 @@ from google import genai
 from google.genai import types
 from loguru import logger
 
-from backend.classifier.diff_classifier import BackendDiffClassification, get_gemini_api_version
+from backend.classifier.diff_classifier import BackendDiffClassification
+from backend.gemini_config import get_gemini_api_key, get_gemini_api_version, get_gemini_model_candidates
 from backend.generators.prompts import API_SPEC_GENERATOR_SYSTEM_PROMPT, API_SPEC_GENERATOR_USER_PROMPT
 from backend.github_client import (
     GitHubCommitResult,
@@ -236,12 +237,9 @@ def _generate_markdown_with_gemini(
     classification: BackendDiffClassification,
     file_contexts: list[RelatedFileContext],
 ) -> str:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-
+    api_key = get_gemini_api_key()
     api_version = get_gemini_api_version()
-    models = get_api_spec_model_candidates()
+    models = get_gemini_model_candidates()
     logger.info("Configuring Gemini API spec generator api_version={api_version} models={models}", api_version=api_version, models=models)
 
     client = genai.Client(
@@ -343,15 +341,6 @@ Not detected from provided context.
 ### File Contents
 {_format_context_section(file_contexts, "content")}
 """
-
-
-def get_api_spec_model_candidates() -> list[str]:
-    primary = os.getenv("GEMINI_API_SPEC_MODEL") or os.getenv("GEMINI_CLASSIFIER_MODEL") or DEFAULT_API_SPEC_MODEL
-    fallback = os.getenv("GEMINI_API_SPEC_FALLBACK_MODEL") or os.getenv("GEMINI_CLASSIFIER_FALLBACK_MODEL") or FALLBACK_API_SPEC_MODEL
-    candidates = [primary]
-    if fallback not in candidates:
-        candidates.append(fallback)
-    return candidates
 
 
 def _should_try_fallback_model(error: Exception, model_name: str, models: list[str]) -> bool:

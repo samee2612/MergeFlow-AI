@@ -39,7 +39,8 @@ def test_build_release_email_contains_summary_artifacts_and_fallback_formats() -
 
     assert email.subject == "[MergeFlow] PR #42 Processed - Add login endpoint"
     assert "POST /login - Login user" in email.plain_text
-    assert "[ok] Notion Documentation: https://notion.so/page-1" in email.plain_text
+    assert "[ok] PR Documentation Draft: https://notion.so/page-1" in email.plain_text
+    assert "[missing] Service Documentation" in email.plain_text
     assert "verify invalid credential handling" in email.plain_text
     assert "<h1>MergeFlow Release Report</h1>" in email.html
     assert "POST /login - Login user" in email.html
