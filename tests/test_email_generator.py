@@ -51,10 +51,11 @@ def test_parse_recipient_list_supports_multiple_delimiters_and_dedupes() -> None
     assert recipients == ["dev@example.com", "qa@example.com", "ops@example.com"]
 
 
-def test_generate_and_send_release_email_returns_failure_without_raising(monkeypatch) -> None:
+def test_generate_and_send_release_email_returns_failure_without_raising(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("SENDGRID_API_KEY", "SG.test")
     monkeypatch.setenv("SENDGRID_FROM_EMAIL", "mergeflow@example.com")
     monkeypatch.setenv("SENDGRID_RECIPIENT_EMAILS", "dev@example.com")
+    monkeypatch.setenv("MERGEFLOW_RUNS_DIR", str(tmp_path))
 
     result = asyncio.run(
         generate_and_send_release_email(
