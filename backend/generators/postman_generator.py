@@ -16,7 +16,6 @@ from backend.generators.prompts import POSTMAN_GENERATOR_SYSTEM_PROMPT, POSTMAN_
 from backend.github_client import (
     GitHubCommitResult,
     commit_repository_file_text,
-    write_local_artifact_backup,
 )
 
 if TYPE_CHECKING:
@@ -47,6 +46,8 @@ async def generate_postman_collection(
     target_branch: str,
     artifact_committer: ArtifactCommitter = commit_repository_file_text,
 ) -> PostmanGenerationResult:
+    del artifact_committer  # Postman collection is embedded into Notion, not committed as a repo artifact.
+
     target_path = build_target_repo_postman_path()
     logger.info(
         "Postman generation started repo={repo} pr_number={pr_number} branch={branch} path={path}",
@@ -87,66 +88,18 @@ async def generate_postman_collection(
         request_count=request_count,
     )
 
-    commit_message = build_postman_commit_message(pr_context)
-    try:
-        commit_result = await artifact_committer(
-            pr_context.repository,
-            target_branch,
-            target_path,
-            validated_json,
-            commit_message,
-            pr_context.pr_number,
-        )
-    except Exception as error:
-        backup_path = write_local_artifact_backup(pr_context.repository, pr_context.pr_number, target_path, validated_json)
-        logger.exception(
-            "Unexpected commit failure for Postman artifact repo={repo} branch={branch} final_file_path={path} "
-            "local_backup_path={local_backup_path} error={error}",
-            repo=pr_context.repository,
-            branch=target_branch,
-            path=target_path,
-            local_backup_path=backup_path,
-            error=str(error),
-        )
-        return PostmanGenerationResult(
-            collection_json=validated_json,
-            destination=target_path,
-            target_path=target_path,
-            target_branch=target_branch,
-            commit_result=None,
-        )
-
-    if not commit_result.success:
-        logger.error(
-            "Postman commit failed repo={repo} branch={branch} final_file_path={path} local_backup_path={local_backup_path} "
-            "error={error}",
-            repo=commit_result.repository,
-            branch=commit_result.branch,
-            path=commit_result.file_path,
-            local_backup_path=commit_result.local_backup_path,
-            error=commit_result.error_message,
-        )
-        return PostmanGenerationResult(
-            collection_json=validated_json,
-            destination=commit_result.file_path,
-            target_path=target_path,
-            target_branch=target_branch,
-            commit_result=commit_result,
-        )
-
     logger.info(
-        "Postman commit succeeded repo={repo} branch={branch} final_file_path={path} destination={destination}",
+        "Postman collection generated as internal Notion-embedded artifact repo={repo} branch={branch} final_file_path={path}",
         repo=pr_context.repository,
         branch=target_branch,
         path=target_path,
-        destination=commit_result.destination,
     )
     return PostmanGenerationResult(
         collection_json=validated_json,
-        destination=commit_result.destination,
+        destination="Embedded in Notion; not committed to repository.",
         target_path=target_path,
         target_branch=target_branch,
-        commit_result=commit_result,
+        commit_result=None,
     )
 
 

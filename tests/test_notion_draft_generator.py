@@ -93,6 +93,7 @@ def test_build_pr_review_page_blocks_include_draft_markers() -> None:
     assert "Awaiting Review" in block_text
     assert "POST /login" in block_text
     assert "sequenceDiagram" in block_text
+    assert "API analysis markdown: internal intermediate only" in block_text
 
 
 def test_merge_section_blocks_appends_release_history() -> None:

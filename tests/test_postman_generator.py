@@ -3,7 +3,6 @@ import json
 import pytest
 
 from backend.generators import postman_generator
-from backend.github_client import GitHubCommitResult
 from backend.pipeline import PullRequestContext
 
 
@@ -147,29 +146,16 @@ def test_fallback_collection_converts_openapi_endpoint_to_postman_request() -> N
 
 
 @pytest.mark.asyncio
-async def test_generate_postman_collection_commits_to_target_repo(monkeypatch: pytest.MonkeyPatch) -> None:
-    commits: list[tuple[str, str, str, str, str, int | None]] = []
-
+async def test_generate_postman_collection_returns_internal_notion_embedded_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_generate(pr_context: PullRequestContext, openapi_yaml: str) -> str:
         assert "openapi: 3.0.3" in openapi_yaml
         return _postman_json()
 
     async def fake_commit(
-        repository: str,
-        branch: str,
-        file_path: str,
-        content: str,
-        commit_message: str,
-        pr_number: int | None,
-    ) -> GitHubCommitResult:
-        commits.append((repository, branch, file_path, content, commit_message, pr_number))
-        return GitHubCommitResult(
-            success=True,
-            repository=repository,
-            branch=branch,
-            file_path=file_path,
-            destination=f"https://github.com/{repository}/blob/{branch}/{file_path}",
-        )
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        raise AssertionError("Postman collection should not be committed")
 
     monkeypatch.setattr(postman_generator, "_generate_postman_collection_with_gemini", fake_generate)
 
@@ -180,38 +166,23 @@ async def test_generate_postman_collection_commits_to_target_repo(monkeypatch: p
         artifact_committer=fake_commit,
     )
 
-    assert result.destination == "https://github.com/owner/repo/blob/master/tests/postman_collection.json"
+    assert result.destination == "Embedded in Notion; not committed to repository."
     assert result.target_path == "tests/postman_collection.json"
-    assert commits[0][0:3] == ("owner/repo", "master", "tests/postman_collection.json")
-    assert commits[0][4] == "Add MergeFlow Postman collection for #42"
-    assert commits[0][5] == 42
+    assert result.commit_result is None
 
 
 @pytest.mark.asyncio
 async def test_generate_postman_collection_uses_fallback_when_gemini_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    commits: list[tuple[str, str, str, str, str, int | None]] = []
-
     def fake_generate(pr_context: PullRequestContext, openapi_yaml: str) -> str:
         raise RuntimeError("Gemini unavailable")
 
     async def fake_commit(
-        repository: str,
-        branch: str,
-        file_path: str,
-        content: str,
-        commit_message: str,
-        pr_number: int | None,
-    ) -> GitHubCommitResult:
-        commits.append((repository, branch, file_path, content, commit_message, pr_number))
-        return GitHubCommitResult(
-            success=True,
-            repository=repository,
-            branch=branch,
-            file_path=file_path,
-            destination=file_path,
-        )
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        raise AssertionError("Postman fallback collection should not be committed")
 
     monkeypatch.setattr(postman_generator, "_generate_postman_collection_with_gemini", fake_generate)
 
@@ -225,15 +196,13 @@ async def test_generate_postman_collection_uses_fallback_when_gemini_fails(
     parsed = json.loads(result.collection_json)
     assert parsed["item"][0]["request"]["method"] == "POST"
     assert "Gemini unavailable" in parsed["info"]["description"]
-    assert commits[0][2] == "tests/postman_collection.json"
+    assert result.commit_result is None
 
 
 @pytest.mark.asyncio
 async def test_generate_postman_collection_replaces_empty_items_when_openapi_has_operations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    commits: list[tuple[str, str, str, str, str, int | None]] = []
-
     def fake_generate(pr_context: PullRequestContext, openapi_yaml: str) -> str:
         return json.dumps(
             {
@@ -246,21 +215,10 @@ async def test_generate_postman_collection_replaces_empty_items_when_openapi_has
         )
 
     async def fake_commit(
-        repository: str,
-        branch: str,
-        file_path: str,
-        content: str,
-        commit_message: str,
-        pr_number: int | None,
-    ) -> GitHubCommitResult:
-        commits.append((repository, branch, file_path, content, commit_message, pr_number))
-        return GitHubCommitResult(
-            success=True,
-            repository=repository,
-            branch=branch,
-            file_path=file_path,
-            destination=file_path,
-        )
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        raise AssertionError("Postman repaired collection should not be committed")
 
     monkeypatch.setattr(postman_generator, "_generate_postman_collection_with_gemini", fake_generate)
 
@@ -278,26 +236,14 @@ async def test_generate_postman_collection_replaces_empty_items_when_openapi_has
 
 
 @pytest.mark.asyncio
-async def test_generate_postman_collection_does_not_crash_when_commit_fails(
+async def test_generate_postman_collection_ignores_artifact_committer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def fake_commit(
-        repository: str,
-        branch: str,
-        file_path: str,
-        content: str,
-        commit_message: str,
-        pr_number: int | None,
-    ) -> GitHubCommitResult:
-        return GitHubCommitResult(
-            success=False,
-            repository=repository,
-            branch=branch,
-            file_path=file_path,
-            destination=file_path,
-            error_message="Commit requires Contents: write access to owner/repo.",
-            local_backup_path="/tmp/mergeflow-runs/owner/repo/42/tests/postman_collection.json",
-        )
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        raise AssertionError("Postman collection should not be committed")
 
     monkeypatch.setattr(postman_generator, "_generate_postman_collection_with_gemini", lambda *args: _postman_json())
 
@@ -308,6 +254,5 @@ async def test_generate_postman_collection_does_not_crash_when_commit_fails(
         artifact_committer=fake_commit,
     )
 
-    assert result.destination == "tests/postman_collection.json"
-    assert result.commit_result is not None
-    assert result.commit_result.local_backup_path == "/tmp/mergeflow-runs/owner/repo/42/tests/postman_collection.json"
+    assert result.destination == "Embedded in Notion; not committed to repository."
+    assert result.commit_result is None

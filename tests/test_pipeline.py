@@ -18,6 +18,14 @@ async def test_backend_pr_fetches_diff_and_classifies(monkeypatch: pytest.Monkey
     openapi_calls: list[tuple[pipeline.PullRequestContext, BackendDiffClassification, str, str]] = []
     postman_calls: list[tuple[pipeline.PullRequestContext, str, str]] = []
     notion_calls: list[tuple[object, ...]] = []
+    cleanup_calls: list[
+        tuple[
+            pipeline.PullRequestContext,
+            ApiSpecGenerationResult,
+            OpenApiGenerationResult,
+            PostmanGenerationResult,
+        ]
+    ] = []
 
     async def fake_fetch_diff(repository: str, pr_number: int) -> str:
         diff_calls.append((repository, pr_number))
@@ -109,6 +117,14 @@ async def test_backend_pr_fetches_diff_and_classifies(monkeypatch: pytest.Monkey
             service_page_url="https://notion.so/service-page-1",
         )
 
+    async def fake_cleanup(
+        pr_context: pipeline.PullRequestContext,
+        api_spec_result: ApiSpecGenerationResult,
+        openapi_result: OpenApiGenerationResult,
+        postman_result: PostmanGenerationResult,
+    ) -> None:
+        cleanup_calls.append((pr_context, api_spec_result, openapi_result, postman_result))
+
     monkeypatch.setattr(pipeline, "fetch_pull_request_diff", fake_fetch_diff)
     monkeypatch.setattr(pipeline, "classify_backend_diff", fake_classify)
     monkeypatch.setattr(
@@ -125,6 +141,7 @@ async def test_backend_pr_fetches_diff_and_classifies(monkeypatch: pytest.Monkey
     monkeypatch.setattr(pipeline, "generate_openapi_yaml", fake_generate_openapi)
     monkeypatch.setattr(pipeline, "generate_postman_collection", fake_generate_postman)
     monkeypatch.setattr(pipeline, "update_notion_documentation", fake_update_notion)
+    monkeypatch.setattr(pipeline, "cleanup_generated_repo_artifacts", fake_cleanup)
 
     accepted = await pipeline.run_post_merge_pipeline(
         pipeline.PullRequestContext(
@@ -162,6 +179,9 @@ async def test_backend_pr_fetches_diff_and_classifies(monkeypatch: pytest.Monkey
     assert notion_calls[0][3].markdown == "# API Spec\n\n## 4. API Specification Snapshot\n- method: GET\n- path: /foo\n"
     assert notion_calls[0][4].yaml_content == "openapi: 3.0.3\ninfo:\n  title: Test API\n  version: 0.1.0\npaths: {}\n"
     assert notion_calls[0][5].collection_json.startswith('{"info"')
+    assert cleanup_calls[0][1].target_path == "tests/api-spec-and-test-cases.md"
+    assert cleanup_calls[0][2].target_path == "tests/openapi.yaml"
+    assert cleanup_calls[0][3].target_path == "tests/postman_collection.json"
 
 
 @pytest.mark.asyncio
