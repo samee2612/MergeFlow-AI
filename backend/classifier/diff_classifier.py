@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any, Literal
 
 from dotenv import load_dotenv
@@ -70,8 +71,8 @@ def classify_backend_diff(diff_text: str, changed_files: list[str]) -> BackendDi
         )
         return classification
     except Exception as error:
-        logger.exception("Gemini backend classification failed error={error}", error=str(error))
-        return UNKNOWN_CLASSIFICATION
+        logger.exception("Gemini backend classification failed; using deterministic fallback error={error}", error=str(error))
+        return _classify_with_markers(diff_text, changed_files)
 
 
 def classify_diff(diff_text: str, changed_files: list[str]) -> BackendDiffClassification:
@@ -154,6 +155,57 @@ def _should_try_fallback_model(error: Exception, model_name: str, models: list[s
 
 def _format_changed_files(changed_files: list[str]) -> str:
     return "\n".join(f"- {file_path}" for file_path in changed_files) or "- No changed files provided"
+
+
+def _classify_with_markers(diff_text: str, changed_files: list[str]) -> BackendDiffClassification:
+    haystack = " ".join([diff_text, *changed_files]).lower()
+    change_types: list[BackendChangeType] = []
+
+    if _contains_any(haystack, ("routes/", "api/", "endpoint", "get_", "post_", "put_", "patch_", "delete_", "route(")):
+        change_types.append("API")
+    if _contains_any(haystack, ("services/", "service", "business logic", "workflow", "orchestrat")):
+        change_types.append("Service Logic")
+    if _contains_any(haystack, ("repositories/", "repository", "models/", "database", "migration", "schema", "persist")):
+        change_types.append("Database")
+    if _contains_any(haystack, ("auth", "login", "token", "permission", "credential")):
+        change_types.append("Authentication")
+    if _contains_any(haystack, ("validation", "validate", "required", "invalid", "valueerror", "bad request")):
+        change_types.append("Validation")
+    if _contains_any(haystack, (".env", "config", "settings", "docker", "workflow", "yaml", "yml")):
+        change_types.append("Configuration")
+    if re.search(r"\b(fix|bug|error|exception|regression)\b", haystack):
+        change_types.append("Bug Fix")
+    if _contains_any(haystack, ("refactor", "rename", "move", "cleanup")):
+        change_types.append("Refactor")
+
+    if not change_types:
+        change_types.append("Unknown")
+
+    file_count = len(changed_files)
+    summary = (
+        f"Deterministic fallback classification from {file_count} changed file(s): "
+        f"{', '.join(change_types)}."
+    )
+    if "API" in change_types:
+        endpoint_hint = _first_endpoint_hint(diff_text)
+        if endpoint_hint:
+            summary = f"Updates backend API flow for {endpoint_hint} across {file_count} changed file(s)."
+
+    return BackendDiffClassification(change_types=change_types, summary=summary)
+
+
+def _contains_any(haystack: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in haystack for needle in needles)
+
+
+def _first_endpoint_hint(diff_text: str) -> str | None:
+    endpoint_match = re.search(r"(GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_./{}?-]+)", diff_text, flags=re.IGNORECASE)
+    if endpoint_match:
+        return f"{endpoint_match.group(1).upper()} {endpoint_match.group(2)}"
+    route_match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*_route)\b", diff_text)
+    if route_match:
+        return route_match.group(1).replace("_", " ")
+    return None
 
 
 def _parse_classification_json(response_text: str) -> BackendDiffClassification:
