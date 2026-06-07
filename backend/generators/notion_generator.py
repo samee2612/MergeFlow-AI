@@ -11,7 +11,7 @@ import httpx
 from loguru import logger
 import yaml
 
-from backend.run_store import build_run_metadata_path
+from backend.run_store import run_id_for, update_run
 
 if TYPE_CHECKING:
     from backend.classifier.diff_classifier import BackendDiffClassification
@@ -31,8 +31,7 @@ MAX_BLOCKS_PER_APPEND = 100
 @dataclass(frozen=True)
 class NotionSettings:
     api_key: str
-    database_id: str
-    title_property: str
+    root_page_id: str
 
 
 @dataclass(frozen=True)
@@ -141,7 +140,7 @@ class NotionApiClient:
         return _page_ref_from_payload(response_payload)
 
     async def _replace_children(self, page_id: str, blocks: list[dict[str, Any]]) -> None:
-        for child_id in await self._list_child_block_ids(page_id):
+        for child_id in await self._list_replaceable_child_block_ids(page_id):
             await self._request("PATCH", f"/blocks/{child_id}", json_payload={"archived": True})
         await self._append_children(page_id, blocks)
 
@@ -152,7 +151,7 @@ class NotionApiClient:
                 continue
             await self._request("PATCH", f"/blocks/{page_id}/children", json_payload={"children": chunk})
 
-    async def _list_child_block_ids(self, page_id: str) -> list[str]:
+    async def _list_replaceable_child_block_ids(self, page_id: str) -> list[str]:
         child_ids: list[str] = []
         next_cursor: str | None = None
         while True:
@@ -166,7 +165,11 @@ class NotionApiClient:
                 child_ids.extend(
                     str(block["id"])
                     for block in results
-                    if isinstance(block, dict) and isinstance(block.get("id"), str)
+                    if (
+                        isinstance(block, dict)
+                        and isinstance(block.get("id"), str)
+                        and block.get("type") != "child_page"
+                    )
                 )
 
             next_cursor_value = response_payload.get("next_cursor")
@@ -203,6 +206,91 @@ class NotionApiClient:
         return payload
 
 
+class NotionHierarchyClient(NotionApiClient):
+    async def find_child_page_by_title(self, parent_page_id: str, title: str) -> NotionPageRef | None:
+        async for block in self._iter_block_children(parent_page_id):
+            if block.get("type") != "child_page":
+                continue
+            child_page = block.get("child_page")
+            if not isinstance(child_page, dict):
+                continue
+            child_title = child_page.get("title")
+            if isinstance(child_title, str) and child_title == title:
+                block_id = block.get("id")
+                if isinstance(block_id, str):
+                    page_payload = await self._request("GET", f"/pages/{block_id}")
+                    return _page_ref_from_payload(page_payload)
+        return None
+
+    async def create_child_page(self, parent_page_id: str, title: str, blocks: list[dict[str, Any]]) -> NotionPageRef:
+        payload = {
+            "parent": {"page_id": parent_page_id},
+            "properties": {
+                "title": {
+                    "title": [{"type": "text", "text": {"content": title[:2000]}}],
+                },
+            },
+            "children": blocks[:MAX_BLOCKS_PER_APPEND],
+        }
+        response_payload = await self._request("POST", "/pages", json_payload=payload)
+        page_ref = _page_ref_from_payload(response_payload)
+        await self._append_children(page_ref.page_id, blocks[MAX_BLOCKS_PER_APPEND:])
+        return page_ref
+
+    async def update_child_page(self, page_id: str, blocks: list[dict[str, Any]]) -> NotionPageRef:
+        await self._replace_children(page_id, blocks)
+        page_payload = await self._request("GET", f"/pages/{page_id}")
+        return _page_ref_from_payload(page_payload)
+
+    async def get_page_blocks(self, page_id: str) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        async for block in self._iter_block_children(page_id):
+            blocks.append(block)
+        return blocks
+
+    async def _iter_block_children(self, page_id: str):
+        next_cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"page_size": 100}
+            if next_cursor:
+                params["start_cursor"] = next_cursor
+
+            response_payload = await self._request("GET", f"/blocks/{page_id}/children", params=params)
+            results = response_payload.get("results")
+            if isinstance(results, list):
+                for block in results:
+                    if isinstance(block, dict):
+                        yield block
+
+            next_cursor_value = response_payload.get("next_cursor")
+            if not response_payload.get("has_more") or not isinstance(next_cursor_value, str):
+                return
+            next_cursor = next_cursor_value
+
+
+async def resolve_service_documentation_page(
+    client: NotionHierarchyClient,
+    root_page_id: str,
+    team_name: str,
+    service_name: str,
+) -> NotionPageRef:
+    team_page = await client.find_child_page_by_title(root_page_id, team_name)
+    if team_page is None:
+        raise RuntimeError(
+            f"Team documentation page not found under Notion root: {team_name!r}. "
+            f"Expected a child page of the root page with this exact title."
+        )
+
+    service_page = await client.find_child_page_by_title(team_page.page_id, service_name)
+    if service_page is None:
+        raise RuntimeError(
+            f"Service documentation page not found for {service_name!r} under team {team_name!r}. "
+            f"Expected a child page of the team page with this exact title."
+        )
+
+    return service_page
+
+
 async def sync_notion_page(
     pr_context: PullRequestContext,
     classification: BackendDiffClassification,
@@ -227,14 +315,14 @@ async def sync_notion_page(
             openapi_result,
             postman_result,
         )
-        client = notion_client or NotionApiClient(settings.api_key)
-        existing_page = await client.find_page_by_title(settings.database_id, settings.title_property, title)
+        client = notion_client or NotionHierarchyClient(settings.api_key)
+        existing_page = await client.find_child_page_by_title(settings.root_page_id, title)
 
         if existing_page:
-            page_ref = await client.update_page(existing_page.page_id, settings.title_property, title, blocks)
+            page_ref = await client.update_child_page(existing_page.page_id, blocks)
             action = "updated"
         else:
-            page_ref = await client.create_page(settings.database_id, settings.title_property, title, blocks)
+            page_ref = await client.create_child_page(settings.root_page_id, title, blocks)
             action = "created"
 
         result = NotionSyncResult(
@@ -280,14 +368,13 @@ async def sync_notion_page(
 
 def get_notion_settings() -> NotionSettings:
     api_key = os.getenv("NOTION_API_KEY", "").strip()
-    database_id = os.getenv("NOTION_DATABASE_ID", "").strip()
-    title_property = os.getenv("NOTION_TITLE_PROPERTY", DEFAULT_NOTION_TITLE_PROPERTY).strip() or DEFAULT_NOTION_TITLE_PROPERTY
+    root_page_id = os.getenv("NOTION_ROOT_PAGE_ID", "").strip()
 
-    missing = [name for name, value in (("NOTION_API_KEY", api_key), ("NOTION_DATABASE_ID", database_id)) if not value]
+    missing = [name for name, value in (("NOTION_API_KEY", api_key), ("NOTION_ROOT_PAGE_ID", root_page_id)) if not value]
     if missing:
         raise RuntimeError(f"Missing Notion configuration: {', '.join(missing)}")
 
-    return NotionSettings(api_key=api_key, database_id=database_id, title_property=title_property)
+    return NotionSettings(api_key=api_key, root_page_id=root_page_id)
 
 
 def build_notion_page_title(pr_context: PullRequestContext) -> str:
@@ -441,24 +528,22 @@ def extract_markdown_section(markdown: str, section_title: str) -> str:
 
 
 def write_notion_run_metadata(pr_context: PullRequestContext, result: NotionSyncResult) -> str:
-    metadata_path = build_run_metadata_path(pr_context)
-    metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_json_object(metadata_path)
-    existing["notion"] = {
-        "success": result.success,
-        "action": result.action,
-        "page_id": result.page_id,
-        "page_url": result.page_url,
-        "error_message": result.error_message,
-    }
-    metadata_path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    update_run(
+        pr_context,
+        notion={
+            "success": result.success,
+            "action": result.action,
+            "page_id": result.page_id,
+            "page_url": result.page_url,
+            "error_message": result.error_message,
+        },
+    )
     logger.info(
-        "Saved MergeFlow run metadata repo={repo} pr_number={pr_number} metadata_path={metadata_path}",
+        "Saved MergeFlow run metadata repo={repo} pr_number={pr_number}",
         repo=pr_context.repository,
         pr_number=pr_context.pr_number,
-        metadata_path=str(metadata_path),
     )
-    return str(metadata_path)
+    return run_id_for(pr_context.repository, pr_context.pr_number)
 
 
 def safe_write_notion_run_metadata(pr_context: PullRequestContext, result: NotionSyncResult) -> str | None:

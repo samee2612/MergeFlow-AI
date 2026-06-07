@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+from dataclasses import asdict
 from typing import Any
 
 from dotenv import load_dotenv
@@ -11,7 +12,8 @@ from loguru import logger
 from backend.dashboard_runs import get_dashboard_run, list_dashboard_runs, list_dashboard_runs_for_service, list_dashboard_runs_for_team
 from backend.github_client import fetch_pull_request_changed_files
 from backend.organization import get_organization
-from backend.pipeline import PullRequestContext, run_post_merge_pipeline
+from backend.pipeline import PullRequestContext
+from backend.worker import run_post_merge_pipeline_task
 
 load_dotenv()
 
@@ -145,6 +147,11 @@ async def github_webhook(
 
     changed_files = await fetch_pull_request_changed_files(repo_name, pr_number)
     pr_context = build_pull_request_context(payload, changed_files)
-    accepted = await run_post_merge_pipeline(pr_context)
+    run_post_merge_pipeline_task.delay(asdict(pr_context))
 
-    return {"status": "accepted" if accepted else "failed"}
+    logger.info(
+        "Enqueued post-merge pipeline repo={repo} pr_number={pr_number}",
+        repo=repo_name,
+        pr_number=pr_number,
+    )
+    return {"status": "accepted"}

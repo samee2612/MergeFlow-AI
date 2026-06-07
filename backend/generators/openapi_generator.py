@@ -244,7 +244,39 @@ def detect_endpoints(source_text: str) -> list[DetectedEndpoint]:
             )
         )
 
+    endpoints.extend(_detect_markdown_endpoints(source_text))
     return _dedupe_endpoints(endpoints)
+
+
+def _detect_markdown_endpoints(source_text: str) -> list[DetectedEndpoint]:
+    endpoints: list[DetectedEndpoint] = []
+    endpoint_pattern = re.compile(
+        r"(?:Endpoint:\s*)?`?(GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_./{}-]+)`?",
+        flags=re.IGNORECASE,
+    )
+    for match in endpoint_pattern.finditer(source_text):
+        method = match.group(1).upper()
+        path = match.group(2)
+        context_start = max(0, match.start() - 500)
+        context_end = min(len(source_text), match.end() + 1200)
+        context = source_text[context_start:context_end]
+        response_codes = sorted({int(code) for code in re.findall(r"\b([1-5]\d{2})\b", context)})
+        if 200 not in response_codes:
+            response_codes.insert(0, 200)
+        operation_name = _operation_name_from_endpoint(method, path)
+        endpoints.append(
+            DetectedEndpoint(
+                method=method,
+                path=path,
+                operation_name=operation_name,
+                summary=_summary_from_endpoint(method, path),
+                request_schema=_schema_name_near_endpoint(context, "Request"),
+                response_schema=_schema_name_near_endpoint(context, "Response"),
+                response_codes=response_codes,
+                headers=_detect_header_parameters(context),
+            )
+        )
+    return endpoints
 
 
 def detect_schema_names(source_text: str) -> list[str]:
@@ -517,6 +549,30 @@ def _response_description(status_code: int) -> str:
 def _tag_from_path(path: str) -> str:
     first_segment = path.strip("/").split("/", 1)[0]
     return first_segment.replace("-", " ").title() if first_segment else "API"
+
+
+def _operation_name_from_endpoint(method: str, path: str) -> str:
+    path_slug = re.sub(r"[^a-zA-Z0-9]+", "_", path.strip("/")).strip("_")
+    return f"{method.lower()}_{path_slug or 'root'}"
+
+
+def _summary_from_endpoint(method: str, path: str) -> str:
+    action = {
+        "GET": "Get",
+        "POST": "Create or update",
+        "PUT": "Update",
+        "PATCH": "Patch",
+        "DELETE": "Delete",
+    }.get(method, method.title())
+    resource = path.strip("/") or "resource"
+    return f"{action} {resource.replace('-', ' ')}"
+
+
+def _schema_name_near_endpoint(context: str, marker: str) -> str | None:
+    schema_name = _first_regex_group(context, rf"{marker}[^`\n]*`([A-Z]\w+)`")
+    if schema_name:
+        return schema_name
+    return _first_regex_group(context, rf"\b([A-Z]\w*(?:{marker}|{marker}s))\b")
 
 
 def _looks_auth_related(endpoint: DetectedEndpoint, classification: BackendDiffClassification) -> bool:

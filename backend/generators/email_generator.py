@@ -15,7 +15,7 @@ from backend.generators.notion_generator import (
     summarize_openapi,
     summarize_postman_collection,
 )
-from backend.run_store import build_run_metadata_path
+from backend.run_store import run_id_for, update_run
 
 if TYPE_CHECKING:
     from backend.classifier.diff_classifier import BackendDiffClassification
@@ -341,24 +341,22 @@ def _notion_service_page_url(notion_result: NotionDocumentationResult | NotionSy
 
 
 def write_email_run_metadata(pr_context: PullRequestContext, result: EmailSendResult) -> str:
-    metadata_path = build_run_metadata_path(pr_context)
-    metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_json_object(metadata_path)
-    existing["email"] = {
-        "success": result.success,
-        "recipients": result.recipients,
-        "subject": result.subject,
-        "status_code": result.status_code,
-        "error_message": result.error_message,
-    }
-    metadata_path.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    update_run(
+        pr_context,
+        email={
+            "success": result.success,
+            "recipients": result.recipients,
+            "subject": result.subject,
+            "status_code": result.status_code,
+            "error_message": result.error_message,
+        },
+    )
     logger.info(
-        "Saved MergeFlow email metadata repo={repo} pr_number={pr_number} metadata_path={metadata_path}",
+        "Saved MergeFlow email metadata repo={repo} pr_number={pr_number}",
         repo=pr_context.repository,
         pr_number=pr_context.pr_number,
-        metadata_path=str(metadata_path),
     )
-    return str(metadata_path)
+    return run_id_for(pr_context.repository, pr_context.pr_number)
 
 
 def safe_write_email_run_metadata(pr_context: PullRequestContext, result: EmailSendResult) -> str | None:

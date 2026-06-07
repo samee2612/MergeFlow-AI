@@ -9,11 +9,12 @@ from loguru import logger
 
 from backend.generators.mermaid_generator import MermaidDiagrams, extract_openapi_operations, generate_mermaid_diagrams
 from backend.generators.notion_generator import (
-    NotionApiClient,
+    NotionHierarchyClient,
     NotionPageRef,
     NotionSyncResult,
     extract_markdown_section,
     get_notion_settings,
+    resolve_service_documentation_page,
     safe_write_notion_run_metadata,
     summarize_openapi,
     summarize_postman_collection,
@@ -24,7 +25,6 @@ from backend.generators.notion_generator import (
     _heading_2,
     _paragraphs,
 )
-from backend.generators.notion_generator import MAX_BLOCKS_PER_APPEND
 
 if TYPE_CHECKING:
     from backend.classifier.diff_classifier import BackendDiffClassification
@@ -66,77 +66,33 @@ class NotionDocumentationResult:
         return self.pr_review_page_url
 
 
-class NotionHierarchyClient(NotionApiClient):
-    async def find_child_page_by_title(self, parent_page_id: str, title: str) -> NotionPageRef | None:
-        async for block in self._iter_block_children(parent_page_id):
-            if block.get("type") != "child_page":
-                continue
-            child_page = block.get("child_page")
-            if not isinstance(child_page, dict):
-                continue
-            child_title = child_page.get("title")
-            if isinstance(child_title, str) and child_title == title:
-                block_id = block.get("id")
-                if isinstance(block_id, str):
-                    page_payload = await self._request("GET", f"/pages/{block_id}")
-                    return _page_ref_from_payload(page_payload)
-        return None
-
-    async def create_child_page(self, parent_page_id: str, title: str, blocks: list[dict[str, Any]]) -> NotionPageRef:
-        payload = {
-            "parent": {"page_id": parent_page_id},
-            "properties": {
-                "title": {
-                    "title": [{"type": "text", "text": {"content": title[:2000]}}],
-                },
-            },
-            "children": blocks[:MAX_BLOCKS_PER_APPEND],
-        }
-        response_payload = await self._request("POST", "/pages", json_payload=payload)
-        page_ref = _page_ref_from_payload(response_payload)
-        await self._append_children(page_ref.page_id, blocks[MAX_BLOCKS_PER_APPEND:])
-        return page_ref
-
-    async def update_child_page(self, page_id: str, blocks: list[dict[str, Any]]) -> NotionPageRef:
-        await self._replace_children(page_id, blocks)
-        page_payload = await self._request("GET", f"/pages/{page_id}")
-        return _page_ref_from_payload(page_payload)
-
-    async def get_page_blocks(self, page_id: str) -> list[dict[str, Any]]:
-        blocks: list[dict[str, Any]] = []
-        async for block in self._iter_block_children(page_id):
-            blocks.append(block)
-        return blocks
-
+class NotionDocumentationHierarchyClient(NotionHierarchyClient):
     async def merge_service_page_sections(self, page_id: str, section_blocks: dict[str, list[dict[str, Any]]]) -> NotionPageRef:
         existing_blocks = await self.get_page_blocks(page_id)
-        merged_blocks = _merge_section_blocks(existing_blocks, section_blocks)
-        return await self.update_child_page(page_id, merged_blocks)
+        inline_section_blocks: dict[str, list[dict[str, Any]]] = {}
 
-    async def _iter_block_children(self, page_id: str):
-        next_cursor: str | None = None
-        while True:
-            params: dict[str, Any] = {"page_size": 100}
-            if next_cursor:
-                params["start_cursor"] = next_cursor
+        for section_name, blocks in section_blocks.items():
+            section_page = await self.find_child_page_by_title(page_id, section_name)
+            if section_page is None:
+                inline_section_blocks[section_name] = blocks
+                continue
 
-            response_payload = await self._request("GET", f"/blocks/{page_id}/children", params=params)
-            results = response_payload.get("results")
-            if isinstance(results, list):
-                for block in results:
-                    if isinstance(block, dict):
-                        yield block
+            if section_name == "Release History":
+                existing_section_blocks = _appendable_blocks(await self.get_page_blocks(section_page.page_id))
+                await self.update_child_page(section_page.page_id, [*existing_section_blocks, *blocks])
+            else:
+                await self.update_child_page(section_page.page_id, blocks)
 
-            next_cursor_value = response_payload.get("next_cursor")
-            if not response_payload.get("has_more") or not isinstance(next_cursor_value, str):
-                return
-            next_cursor = next_cursor_value
+        if inline_section_blocks:
+            merged_blocks = _merge_section_blocks(existing_blocks, inline_section_blocks)
+            return await self.update_child_page(page_id, merged_blocks)
+
+        page_payload = await self._request("GET", f"/pages/{page_id}")
+        page_url = page_payload.get("url")
+        return NotionPageRef(page_id=page_id, page_url=page_url if isinstance(page_url, str) else "")
 
 
 class NotionDocumentationClient(Protocol):
-    async def find_page_by_title(self, database_id: str, title_property: str, title: str) -> NotionPageRef | None:
-        ...
-
     async def find_child_page_by_title(self, parent_page_id: str, title: str) -> NotionPageRef | None:
         ...
 
@@ -168,20 +124,19 @@ async def update_notion_documentation(
 
     try:
         settings = get_notion_settings()
-        client = notion_client or NotionHierarchyClient(settings.api_key)
+        client = notion_client or NotionDocumentationHierarchyClient(settings.api_key)
         diagrams = generate_mermaid_diagrams(
             service.service_name,
             openapi_result.yaml_content,
             extract_markdown_section(api_spec_result.markdown, "Change Summary") or classification.summary,
         )
 
-        service_page = await client.find_page_by_title(
-            settings.database_id,
-            settings.title_property,
+        service_page = await resolve_service_documentation_page(
+            client,
+            settings.root_page_id,
+            service.team_name,
             service.service_name,
         )
-        if service_page is None:
-            raise RuntimeError(f"Service documentation page not found for {service.service_name}")
 
         reviews_folder = await _ensure_child_page(client, service_page.page_id, PR_REVIEWS_FOLDER, [])
         feature_slug = build_feature_folder_slug(pr_context)
@@ -422,14 +377,14 @@ def _merge_section_blocks(
         if heading in section_blocks:
             merged.append(_heading_2(heading))
             if heading == "Release History":
-                existing_body = [block for block in blocks if block.get("type") != "heading_2"]
+                existing_body = _appendable_blocks(block for block in blocks if block.get("type") != "heading_2")
                 merged.extend(existing_body)
                 merged.extend(section_blocks[heading])
             else:
                 merged.extend(section_blocks[heading])
             seen_sections.add(heading)
         else:
-            merged.extend(blocks)
+            merged.extend(_appendable_blocks(blocks))
 
     for heading in SERVICE_SECTIONS:
         if heading in section_blocks and heading not in seen_sections:
@@ -443,6 +398,58 @@ def _merge_section_blocks(
                 merged.extend(section_blocks[heading])
 
     return merged
+
+
+def _appendable_blocks(blocks) -> list[dict[str, Any]]:
+    appendable: list[dict[str, Any]] = []
+    for block in blocks:
+        appendable_block = _appendable_block(block)
+        if appendable_block is not None:
+            appendable.append(appendable_block)
+    return appendable
+
+
+def _appendable_block(block: dict[str, Any]) -> dict[str, Any] | None:
+    block_type = block.get("type")
+    if not isinstance(block_type, str) or block_type == "child_page":
+        return None
+
+    payload = block.get(block_type)
+    if not isinstance(payload, dict):
+        return None
+
+    return {
+        "object": "block",
+        "type": block_type,
+        block_type: _clean_notion_payload(payload),
+    }
+
+
+def _clean_notion_payload(value):
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, child in value.items():
+            if key in {
+                "object",
+                "id",
+                "parent",
+                "created_time",
+                "last_edited_time",
+                "created_by",
+                "last_edited_by",
+                "has_children",
+                "archived",
+                "in_trash",
+                "plain_text",
+            }:
+                continue
+            if child is None:
+                continue
+            cleaned[key] = _clean_notion_payload(child)
+        return cleaned
+    if isinstance(value, list):
+        return [_clean_notion_payload(item) for item in value if item is not None]
+    return value
 
 
 def _split_blocks_by_heading(blocks: list[dict[str, Any]], level: int = 2) -> list[tuple[str | None, list[dict[str, Any]]]]:
@@ -528,14 +535,6 @@ def _extract_feature_names(classification: BackendDiffClassification, openapi_ya
     return features
 
 
-def _page_ref_from_payload(payload: dict[str, Any]) -> NotionPageRef:
-    page_id = payload.get("id")
-    page_url = payload.get("url")
-    if not isinstance(page_id, str) or not page_id:
-        raise ValueError("Notion page response did not include a page id")
-    return NotionPageRef(page_id=page_id, page_url=page_url if isinstance(page_url, str) else "")
-
-
 def _write_documentation_metadata(pr_context: PullRequestContext, result: NotionDocumentationResult) -> str | None:
     legacy_result = NotionSyncResult(
         success=result.success,
@@ -546,21 +545,21 @@ def _write_documentation_metadata(pr_context: PullRequestContext, result: Notion
     )
     try:
         metadata_path = write_notion_run_metadata(pr_context, legacy_result)
-        from backend.run_store import build_run_metadata_path
+        from backend.run_store import update_run
 
-        metadata_path_obj = build_run_metadata_path(pr_context)
-        existing = _read_json_object(metadata_path_obj)
-        existing["notionDocumentation"] = {
-            "success": result.success,
-            "action": result.action,
-            "prReviewPageId": result.pr_review_page_id,
-            "prReviewPageUrl": result.pr_review_page_url,
-            "servicePageId": result.service_page_id,
-            "servicePageUrl": result.service_page_url,
-            "featureFolderId": result.feature_folder_id,
-            "errorMessage": result.error_message,
-        }
-        metadata_path_obj.write_text(json.dumps(existing, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        update_run(
+            pr_context,
+            notionDocumentation={
+                "success": result.success,
+                "action": result.action,
+                "prReviewPageId": result.pr_review_page_id,
+                "prReviewPageUrl": result.pr_review_page_url,
+                "servicePageId": result.service_page_id,
+                "servicePageUrl": result.service_page_url,
+                "featureFolderId": result.feature_folder_id,
+                "errorMessage": result.error_message,
+            },
+        )
         return metadata_path
     except Exception as error:
         logger.exception(

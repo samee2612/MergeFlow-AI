@@ -1,19 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import json
-from pathlib import Path
 from typing import Any
 
-from backend.github_client import get_runs_root
 from backend.organization import service_by_id, service_context_for_repository, team_by_id
-
-
-ARTIFACT_PATHS = {
-    "apiTestCases": "tests/api-spec-and-test-cases.md",
-    "openapi": "tests/openapi.yaml",
-    "postman": "tests/postman_collection.json",
-}
+from backend.run_store import list_run_metadata, read_run_metadata_by_id, run_id_for
 
 IN_PROGRESS_STATUSES = frozenset(
     {"RECEIVED", "RESOLVED_SERVICE", "CLASSIFIED", "GENERATING_ARTIFACTS"}
@@ -21,7 +12,7 @@ IN_PROGRESS_STATUSES = frozenset(
 
 
 def list_dashboard_runs() -> list[dict[str, Any]]:
-    runs = [_summary_from_metadata(path) for path in _metadata_paths()]
+    runs = [_summary_from_metadata(metadata) for metadata in list_run_metadata()]
     return sorted([run for run in runs if run is not None], key=_run_sort_key, reverse=True)
 
 
@@ -44,18 +35,22 @@ def list_dashboard_runs_for_team(team_id: str) -> list[dict[str, Any]]:
 
 
 def get_dashboard_run(run_id: str) -> dict[str, Any] | None:
-    metadata_path = _metadata_path_for_id(run_id)
-    if metadata_path is None:
+    metadata = read_run_metadata_by_id(run_id)
+    if not metadata:
         return None
 
-    metadata = _read_json_object(metadata_path)
-    run_summary = _summary_from_metadata(metadata_path)
+    run_summary = _summary_from_metadata(metadata)
     if run_summary is None:
         return None
 
-    owner, repo_name, pr_number = _run_parts_from_path(metadata_path)
-    repository = f"{owner}/{repo_name}"
+    repository = run_summary.get("repository")
+    if not isinstance(repository, str):
+        return None
+
     notion = metadata.get("notion") if isinstance(metadata.get("notion"), dict) else {}
+    notion_documentation = (
+        metadata.get("notionDocumentation") if isinstance(metadata.get("notionDocumentation"), dict) else {}
+    )
     email = metadata.get("email") if isinstance(metadata.get("email"), dict) else {}
     classification = metadata.get("classification") if isinstance(metadata.get("classification"), dict) else {}
     pipeline_status = _pipeline_status_from_metadata(metadata, run_summary.get("status", ""))
@@ -70,50 +65,43 @@ def get_dashboard_run(run_id: str) -> dict[str, Any] | None:
         },
         "artifacts": _artifact_links(
             repository,
-            notion.get("page_url") if isinstance(notion.get("page_url"), str) else None,
-            run_summary.get("status") == "SUCCESS",
+            run_summary.get("prNumber"),
+            notion,
+            notion_documentation,
+            email,
+            run_summary.get("status") in {"SUCCESS", "NEEDS_ATTENTION", "RUNNING"},
         ),
         "apiOverview": metadata.get("apiOverview") if isinstance(metadata.get("apiOverview"), list) else [],
         "testCases": metadata.get("testCases") if isinstance(metadata.get("testCases"), list) else [],
     }
 
 
-def _metadata_paths() -> list[Path]:
-    root = get_runs_root()
-    if not root.exists():
-        return []
-    return sorted(root.glob("*/*/*/mergeflow_run_metadata.json"), key=lambda path: path.stat().st_mtime, reverse=True)
-
-
-def _metadata_path_for_id(run_id: str) -> Path | None:
-    parts = run_id.split("__")
-    if len(parts) != 3:
-        return None
-    owner, repo_name, pr_number = parts
-    path = get_runs_root() / owner / repo_name / pr_number / "mergeflow_run_metadata.json"
-    return path if path.exists() else None
-
-
-def _summary_from_metadata(path: Path) -> dict[str, Any] | None:
-    metadata = _read_json_object(path)
+def _summary_from_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
     if not metadata:
         return None
 
-    owner, repo_name, pr_number = _run_parts_from_path(path)
-    repository = metadata.get("repository") or f"{owner}/{repo_name}"
+    repository = metadata.get("repository")
+    if not isinstance(repository, str) or not repository:
+        return None
+
+    run_id = metadata.get("runId")
+    if not isinstance(run_id, str) or not run_id:
+        run_id = run_id_for(repository, metadata.get("prNumber") if isinstance(metadata.get("prNumber"), int) else None)
+
     status = _resolve_status(metadata)
     timestamp = metadata.get("updatedAt") or metadata.get("createdAt")
     if not isinstance(timestamp, str):
-        timestamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
 
     pr_title = metadata.get("prTitle")
     if not isinstance(pr_title, str) or not pr_title:
-        pr_title = f"Merged PR #{pr_number}"
+        pr_number = metadata.get("prNumber")
+        pr_title = f"Merged PR #{pr_number}" if pr_number is not None else "Merged PR"
 
     run = enrich_run_with_service_context(
         {
-            "id": metadata.get("runId") or f"{owner}__{repo_name}__{pr_number}",
-            "prNumber": metadata.get("prNumber") if metadata.get("prNumber") is not None else pr_number,
+            "id": run_id,
+            "prNumber": metadata.get("prNumber"),
             "prTitle": pr_title,
             "repository": repository,
             "status": status,
@@ -183,19 +171,6 @@ def _run_sort_key(run: dict[str, Any]) -> tuple[int, str]:
     return numeric_pr, str(run.get("timestamp", ""))
 
 
-def _run_parts_from_path(path: Path) -> tuple[str, str, str]:
-    relative = path.relative_to(get_runs_root())
-    return relative.parts[0], relative.parts[1], relative.parts[2]
-
-
-def _read_json_object(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def enrich_run_with_service_context(run: dict[str, Any]) -> dict[str, Any]:
     service_context = run.get("serviceContext")
     if isinstance(service_context, dict):
@@ -224,32 +199,62 @@ def enrich_run_with_service_context(run: dict[str, Any]) -> dict[str, Any]:
     return {**run, **mapped}
 
 
-def _artifact_links(repository: str, notion_url: str | None, include_repo_artifacts: bool) -> dict[str, dict[str, str]]:
-    base_url = f"https://github.com/{repository}/blob/master"
+def _artifact_links(
+    repository: str,
+    pr_number: Any,
+    notion: dict[str, Any],
+    notion_documentation: dict[str, Any],
+    email: dict[str, Any],
+    include_artifacts: bool,
+) -> dict[str, dict[str, str]]:
     empty = {"label": "", "url": ""}
-    if not include_repo_artifacts:
+    if not include_artifacts:
         return {
-            "apiTestCases": empty,
-            "openapi": empty,
-            "postman": empty,
-            "notion": empty,
+            "notionServicePage": empty,
+            "notionPrReview": empty,
+            "githubPullRequest": empty,
+            "emailSummary": empty,
         }
 
+    service_page_url = _first_string(
+        notion_documentation.get("servicePageUrl"),
+        notion.get("service_page_url"),
+    )
+    pr_review_url = _first_string(
+        notion_documentation.get("prReviewPageUrl"),
+        notion.get("page_url"),
+    )
+    github_pr_url = ""
+    if isinstance(pr_number, int):
+        github_pr_url = f"https://github.com/{repository}/pull/{pr_number}"
+
+    email_recipients = email.get("recipients")
+    email_label = "Release Email Sent"
+    if isinstance(email_recipients, list) and email_recipients:
+        email_label = f"Release Email ({len(email_recipients)} recipient{'s' if len(email_recipients) != 1 else ''})"
+
     return {
-        "apiTestCases": {
-            "label": "API Test Cases",
-            "url": f"{base_url}/{ARTIFACT_PATHS['apiTestCases']}",
+        "notionServicePage": {
+            "label": "Notion Service Page",
+            "url": service_page_url or "",
         },
-        "openapi": {
-            "label": "OpenAPI YAML",
-            "url": f"{base_url}/{ARTIFACT_PATHS['openapi']}",
+        "notionPrReview": {
+            "label": "Notion PR Documentation",
+            "url": pr_review_url or "",
         },
-        "postman": {
-            "label": "Postman Collection",
-            "url": f"{base_url}/{ARTIFACT_PATHS['postman']}",
+        "githubPullRequest": {
+            "label": "GitHub Pull Request",
+            "url": github_pr_url,
         },
-        "notion": {
-            "label": "Notion Page",
-            "url": notion_url or "",
+        "emailSummary": {
+            "label": email_label,
+            "url": "",
         },
     }
+
+
+def _first_string(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
