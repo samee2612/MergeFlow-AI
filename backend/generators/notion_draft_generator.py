@@ -319,11 +319,15 @@ def build_pr_review_page_blocks(
                 f"Service: {service.service_name}",
                 f"Team: {service.team_name}",
                 f"Repository: {pr_context.repository}",
-                f"OpenAPI: {openapi_result.destination}",
-                f"Postman: {postman_result.destination}",
-                f"API analysis: {api_spec_result.destination}",
+                "API analysis markdown: internal intermediate only; not retained in repository.",
+                "OpenAPI/Swagger spec: embedded below; not retained in repository.",
+                "Postman collection: embedded below; not retained in repository.",
             ]
         ),
+        _heading_2("OpenAPI / Swagger Specification"),
+        *_code_blocks(openapi_result.yaml_content, "yaml"),
+        _heading_2("Postman Collection"),
+        *_code_blocks(_format_json(postman_result.collection_json), "json"),
     ]
     return blocks
 
@@ -379,12 +383,14 @@ def build_service_page_section_blocks(
         ],
         "API Reference": [
             *_bullets(api_reference_lines or ["No API operations detected."]),
-            *_bullets([f"OpenAPI source: {openapi_result.destination}"]),
+            *_bullets(["OpenAPI/Swagger source of truth is embedded below."]),
+            *_code_blocks(openapi_result.yaml_content, "yaml"),
         ],
         "Test Suites": [
             *_paragraphs(test_cases or "No generated test cases were detected."),
             *_bullets(postman_summary.request_lines or ["No Postman requests generated."]),
-            *_bullets([f"Postman collection: {postman_result.destination}"]),
+            *_bullets(["Postman collection is embedded below."]),
+            *_code_blocks(_format_json(postman_result.collection_json), "json"),
         ],
         "Release History": [
             *_bullets([release_entry]),
@@ -489,6 +495,23 @@ def _build_proposed_service_updates(
     if "Authentication" in classification.change_types:
         updates.append("Review auth-related architecture and test coverage.")
     return updates
+
+
+def _code_blocks(content: str, language: str) -> list[dict[str, Any]]:
+    normalized = content.strip()
+    if not normalized:
+        return [_code_block("No content generated.", language)]
+
+    max_chars = 1700
+    return [_code_block(normalized[index : index + max_chars], language) for index in range(0, len(normalized), max_chars)]
+
+
+def _format_json(content: str) -> str:
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return content
+    return json.dumps(payload, indent=2, sort_keys=True)
 
 
 def _extract_feature_names(classification: BackendDiffClassification, openapi_yaml: str) -> list[str]:

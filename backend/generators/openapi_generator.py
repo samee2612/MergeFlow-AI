@@ -16,7 +16,6 @@ from backend.generators.prompts import OPENAPI_GENERATOR_SYSTEM_PROMPT, OPENAPI_
 from backend.github_client import (
     GitHubCommitResult,
     commit_repository_file_text,
-    write_local_artifact_backup,
 )
 
 if TYPE_CHECKING:
@@ -58,6 +57,8 @@ async def generate_openapi_yaml(
     target_branch: str,
     artifact_committer: ArtifactCommitter = commit_repository_file_text,
 ) -> OpenApiGenerationResult:
+    del artifact_committer  # OpenAPI is embedded into Notion, not committed as a repo artifact.
+
     target_path = build_target_repo_openapi_path()
     logger.info(
         "OpenAPI generation started repo={repo} pr_number={pr_number} branch={branch} path={path}",
@@ -100,66 +101,18 @@ async def generate_openapi_yaml(
         generated_path_count=generated_path_count,
     )
 
-    commit_message = build_openapi_commit_message(pr_context)
-    try:
-        commit_result = await artifact_committer(
-            pr_context.repository,
-            target_branch,
-            target_path,
-            validated_yaml,
-            commit_message,
-            pr_context.pr_number,
-        )
-    except Exception as error:
-        backup_path = write_local_artifact_backup(pr_context.repository, pr_context.pr_number, target_path, validated_yaml)
-        logger.exception(
-            "Unexpected commit failure for OpenAPI artifact repo={repo} branch={branch} final_file_path={path} "
-            "local_backup_path={local_backup_path} error={error}",
-            repo=pr_context.repository,
-            branch=target_branch,
-            path=target_path,
-            local_backup_path=backup_path,
-            error=str(error),
-        )
-        return OpenApiGenerationResult(
-            yaml_content=validated_yaml,
-            destination=target_path,
-            target_path=target_path,
-            target_branch=target_branch,
-            commit_result=None,
-        )
-
-    if not commit_result.success:
-        logger.error(
-            "OpenAPI commit failed repo={repo} branch={branch} final_file_path={path} local_backup_path={local_backup_path} "
-            "error={error}",
-            repo=commit_result.repository,
-            branch=commit_result.branch,
-            path=commit_result.file_path,
-            local_backup_path=commit_result.local_backup_path,
-            error=commit_result.error_message,
-        )
-        return OpenApiGenerationResult(
-            yaml_content=validated_yaml,
-            destination=commit_result.file_path,
-            target_path=target_path,
-            target_branch=target_branch,
-            commit_result=commit_result,
-        )
-
     logger.info(
-        "OpenAPI commit succeeded repo={repo} branch={branch} final_file_path={path} destination={destination}",
+        "OpenAPI generated as internal Notion-embedded artifact repo={repo} branch={branch} final_file_path={path}",
         repo=pr_context.repository,
         branch=target_branch,
         path=target_path,
-        destination=commit_result.destination,
     )
     return OpenApiGenerationResult(
         yaml_content=validated_yaml,
-        destination=commit_result.destination,
+        destination="Embedded in Notion; not committed to repository.",
         target_path=target_path,
         target_branch=target_branch,
-        commit_result=commit_result,
+        commit_result=None,
     )
 
 

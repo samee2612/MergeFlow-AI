@@ -43,6 +43,16 @@ class GitHubCommitResult:
     local_backup_path: str | None = None
 
 
+@dataclass(frozen=True)
+class GitHubDeleteResult:
+    success: bool
+    repository: str
+    branch: str
+    file_path: str
+    deleted: bool
+    error_message: str | None = None
+
+
 async def fetch_pull_request_changed_files(repository: str, pr_number: int) -> list[str]:
     changed_files: list[str] = []
     page = 1
@@ -290,6 +300,106 @@ async def commit_repository_file_text(
         branch=branch,
         file_path=file_path,
         destination=destination,
+    )
+
+
+async def delete_repository_file(
+    repository: str,
+    branch: str,
+    file_path: str,
+    commit_message: str,
+    pr_number: int | None = None,
+) -> GitHubDeleteResult:
+    if not branch:
+        branch = await fetch_repository_default_branch(repository)
+
+    await log_commit_preflight(
+        repository=repository,
+        branch=branch,
+        file_path=file_path,
+        pr_number=pr_number,
+    )
+
+    permission_error = await verify_contents_write_access(repository)
+    if permission_error:
+        logger.error(
+            "Skipping GitHub delete because token lacks required access repo={repo} branch={branch} path={path} reason={reason}",
+            repo=repository,
+            branch=branch,
+            path=file_path,
+            reason=permission_error,
+        )
+        return GitHubDeleteResult(
+            success=False,
+            repository=repository,
+            branch=branch,
+            file_path=file_path,
+            deleted=False,
+            error_message=permission_error,
+        )
+
+    existing_sha = await _fetch_repository_file_sha(repository, file_path, branch)
+    if not existing_sha:
+        logger.info(
+            "No GitHub file cleanup needed repo={repo} branch={branch} path={path}",
+            repo=repository,
+            branch=branch,
+            path=file_path,
+        )
+        return GitHubDeleteResult(
+            success=True,
+            repository=repository,
+            branch=branch,
+            file_path=file_path,
+            deleted=False,
+        )
+
+    encoded_path = quote(file_path, safe="/")
+    request_url = f"{GITHUB_API_BASE_URL}/repos/{repository}/contents/{encoded_path}"
+    payload = {
+        "message": commit_message,
+        "sha": existing_sha,
+        "branch": branch,
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.delete(
+            request_url,
+            headers=github_json_headers(),
+            json=payload,
+        )
+
+    if response.is_error:
+        log_github_response_debug(
+            response,
+            context=f"GitHub contents delete failed for {repository} branch={branch} path={file_path}",
+            request_url=request_url,
+            request_method="DELETE",
+        )
+        error_message = (
+            f"GitHub delete from {repository} failed with status {response.status_code} "
+            f"for branch {branch} and path {file_path}. Response body: {response.text}"
+        )
+        return GitHubDeleteResult(
+            success=False,
+            repository=repository,
+            branch=branch,
+            file_path=file_path,
+            deleted=False,
+            error_message=error_message,
+        )
+
+    logger.info(
+        "Deleted temporary API analysis artifact repo={repo} branch={branch} path={path}",
+        repo=repository,
+        branch=branch,
+        path=file_path,
+    )
+    return GitHubDeleteResult(
+        success=True,
+        repository=repository,
+        branch=branch,
+        file_path=file_path,
+        deleted=True,
     )
 
 

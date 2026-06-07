@@ -230,9 +230,7 @@ paths: {}
 
 
 @pytest.mark.asyncio
-async def test_generate_openapi_yaml_commits_to_target_repo(monkeypatch: pytest.MonkeyPatch) -> None:
-    commits: list[tuple[str, str, str, str, str, int | None]] = []
-
+async def test_generate_openapi_yaml_returns_internal_notion_embedded_artifact(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_generate(
         pr_context: PullRequestContext,
         classification: BackendDiffClassification,
@@ -242,21 +240,10 @@ async def test_generate_openapi_yaml_commits_to_target_repo(monkeypatch: pytest.
         return _openapi_yaml()
 
     async def fake_commit(
-        repository: str,
-        branch: str,
-        file_path: str,
-        content: str,
-        commit_message: str,
-        pr_number: int | None,
-    ) -> GitHubCommitResult:
-        commits.append((repository, branch, file_path, content, commit_message, pr_number))
-        return GitHubCommitResult(
-            success=True,
-            repository=repository,
-            branch=branch,
-            file_path=file_path,
-            destination=f"https://github.com/{repository}/blob/{branch}/{file_path}",
-        )
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        raise AssertionError("OpenAPI YAML should not be committed")
 
     monkeypatch.setattr(openapi_generator, "_generate_openapi_yaml_with_gemini", fake_generate)
 
@@ -268,26 +255,15 @@ async def test_generate_openapi_yaml_commits_to_target_repo(monkeypatch: pytest.
         artifact_committer=fake_commit,
     )
 
-    assert result.destination == "https://github.com/owner/repo/blob/master/tests/openapi.yaml"
+    assert result.destination == "Embedded in Notion; not committed to repository."
     assert result.target_path == "tests/openapi.yaml"
-    assert commits == [
-        (
-            "owner/repo",
-            "master",
-            "tests/openapi.yaml",
-            _openapi_yaml(),
-            "Add MergeFlow OpenAPI spec for #42",
-            42,
-        )
-    ]
+    assert result.commit_result is None
 
 
 @pytest.mark.asyncio
 async def test_generate_openapi_yaml_uses_valid_fallback_when_gemini_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    commits: list[tuple[str, str, str, str, str, int | None]] = []
-
     def fake_generate(
         pr_context: PullRequestContext,
         classification: BackendDiffClassification,
@@ -296,21 +272,10 @@ async def test_generate_openapi_yaml_uses_valid_fallback_when_gemini_fails(
         raise RuntimeError("Gemini unavailable")
 
     async def fake_commit(
-        repository: str,
-        branch: str,
-        file_path: str,
-        content: str,
-        commit_message: str,
-        pr_number: int | None,
-    ) -> GitHubCommitResult:
-        commits.append((repository, branch, file_path, content, commit_message, pr_number))
-        return GitHubCommitResult(
-            success=True,
-            repository=repository,
-            branch=branch,
-            file_path=file_path,
-            destination=file_path,
-        )
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        raise AssertionError("OpenAPI fallback YAML should not be committed")
 
     monkeypatch.setattr(openapi_generator, "_generate_openapi_yaml_with_gemini", fake_generate)
 
@@ -326,30 +291,18 @@ async def test_generate_openapi_yaml_uses_valid_fallback_when_gemini_fails(
     assert parsed["openapi"] == "3.0.3"
     assert parsed["paths"] == {}
     assert parsed["x-mergeflow"]["generator_error"] == "Gemini unavailable"
-    assert commits[0][2] == "tests/openapi.yaml"
+    assert result.commit_result is None
 
 
 @pytest.mark.asyncio
-async def test_generate_openapi_yaml_does_not_crash_when_commit_fails(
+async def test_generate_openapi_yaml_ignores_artifact_committer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def fake_commit(
-        repository: str,
-        branch: str,
-        file_path: str,
-        content: str,
-        commit_message: str,
-        pr_number: int | None,
-    ) -> GitHubCommitResult:
-        return GitHubCommitResult(
-            success=False,
-            repository=repository,
-            branch=branch,
-            file_path=file_path,
-            destination=file_path,
-            error_message="Commit requires Contents: write access to owner/repo.",
-            local_backup_path="/tmp/mergeflow-runs/owner/repo/42/tests/openapi.yaml",
-        )
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        raise AssertionError("OpenAPI YAML should not be committed")
 
     monkeypatch.setattr(openapi_generator, "_generate_openapi_yaml_with_gemini", lambda *args: _openapi_yaml())
 
@@ -361,6 +314,5 @@ async def test_generate_openapi_yaml_does_not_crash_when_commit_fails(
         artifact_committer=fake_commit,
     )
 
-    assert result.destination == "tests/openapi.yaml"
-    assert result.commit_result is not None
-    assert result.commit_result.local_backup_path == "/tmp/mergeflow-runs/owner/repo/42/tests/openapi.yaml"
+    assert result.destination == "Embedded in Notion; not committed to repository."
+    assert result.commit_result is None

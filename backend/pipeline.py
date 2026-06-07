@@ -6,12 +6,12 @@ from loguru import logger
 
 from backend.classifier.diff_classifier import BackendDiffClassification, classify_backend_diff
 from backend.classifier.scope_classifier import classify_change_scope
-from backend.generators.api_spec_generator import generate_api_spec_and_test_cases
+from backend.generators.api_spec_generator import ApiSpecGenerationResult, generate_api_spec_and_test_cases
 from backend.generators.email_generator import generate_and_send_release_email
 from backend.generators.notion_draft_generator import NotionDocumentationResult, update_notion_documentation
-from backend.generators.openapi_generator import generate_openapi_yaml
-from backend.generators.postman_generator import generate_postman_collection
-from backend.github_client import fetch_pull_request_diff
+from backend.generators.openapi_generator import OpenApiGenerationResult, generate_openapi_yaml
+from backend.generators.postman_generator import PostmanGenerationResult, generate_postman_collection
+from backend.github_client import delete_repository_file, fetch_pull_request_diff
 from backend.run_store import create_run, update_run
 from backend.service_resolver import ServiceResolution, resolve_service
 
@@ -147,6 +147,7 @@ async def classify_accepted_backend_pr(
         postman_result,
         notion_result,
     )
+    await cleanup_generated_repo_artifacts(pr_context, api_spec_result, openapi_result, postman_result)
     return classification
 
 
@@ -157,6 +158,72 @@ def log_pr_classification(classification: BackendDiffClassification) -> None:
         change_types=change_types,
         summary=classification.summary,
     )
+
+
+async def cleanup_generated_repo_artifacts(
+    pr_context: PullRequestContext,
+    api_spec_result: ApiSpecGenerationResult,
+    openapi_result: OpenApiGenerationResult,
+    postman_result: PostmanGenerationResult,
+) -> None:
+    """Remove legacy generated artifacts from the target repo after Notion embeds them."""
+    cleanup_targets = [
+        ("API analysis markdown", api_spec_result.target_branch, api_spec_result.target_path),
+        ("OpenAPI YAML", openapi_result.target_branch, openapi_result.target_path),
+        ("Postman collection", postman_result.target_branch, postman_result.target_path),
+    ]
+
+    for label, target_branch, target_path in cleanup_targets:
+        await cleanup_generated_repo_artifact(pr_context, label, target_branch, target_path)
+
+
+async def cleanup_generated_repo_artifact(
+    pr_context: PullRequestContext,
+    label: str,
+    target_branch: str,
+    target_path: str,
+) -> None:
+    try:
+        delete_result = await delete_repository_file(
+            pr_context.repository,
+            target_branch,
+            target_path,
+            build_generated_artifact_cleanup_commit_message(pr_context, label),
+            pr_context.pr_number,
+        )
+        if delete_result.success:
+            logger.info(
+                "Generated artifact cleanup completed label={label} repo={repo} pr_number={pr_number} path={path} deleted={deleted}",
+                label=label,
+                repo=pr_context.repository,
+                pr_number=pr_context.pr_number,
+                path=target_path,
+                deleted=delete_result.deleted,
+            )
+            return
+
+        logger.error(
+            "Generated artifact cleanup failed label={label} repo={repo} pr_number={pr_number} path={path} error={error}",
+            label=label,
+            repo=pr_context.repository,
+            pr_number=pr_context.pr_number,
+            path=target_path,
+            error=delete_result.error_message,
+        )
+    except Exception as error:
+        logger.exception(
+            "Unexpected generated artifact cleanup failure label={label} repo={repo} pr_number={pr_number} path={path} error={error}",
+            label=label,
+            repo=pr_context.repository,
+            pr_number=pr_context.pr_number,
+            path=target_path,
+            error=str(error),
+        )
+
+
+def build_generated_artifact_cleanup_commit_message(pr_context: PullRequestContext, label: str) -> str:
+    pr_number = f"#{pr_context.pr_number}" if pr_context.pr_number is not None else "merged PR"
+    return f"Remove temporary MergeFlow {label} for {pr_number}"
 
 
 def is_backend_relevant_pr(changed_files: list[str]) -> bool:

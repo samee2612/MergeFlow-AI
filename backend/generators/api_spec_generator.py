@@ -75,6 +75,8 @@ async def generate_api_spec_and_test_cases(
     file_fetcher: FileFetcher = fetch_repository_file_text,
     artifact_committer: ArtifactCommitter = commit_repository_file_text,
 ) -> ApiSpecGenerationResult:
+    del artifact_committer  # API analysis is now an internal intermediate, not a committed artifact.
+
     related_files = select_directly_related_files(pr_context.changed_files)
     patches_by_file = extract_patches_by_file(diff_text)
     file_contexts = await fetch_related_file_contexts(
@@ -92,72 +94,21 @@ async def generate_api_spec_and_test_cases(
 
     target_path = build_target_repo_artifact_path()
     target_branch = await resolve_target_branch(pr_context)
-    commit_message = build_artifact_commit_message(pr_context)
 
     markdown_content = markdown.rstrip() + "\n"
     logger.info(
-        "Generated API spec/test-case markdown locally repo={repo} pr_number={pr_number} char_count={char_count}",
+        "Generated API analysis markdown as internal intermediate repo={repo} pr_number={pr_number} char_count={char_count}",
         repo=pr_context.repository,
         pr_number=pr_context.pr_number,
         char_count=len(markdown_content),
     )
 
-    try:
-        commit_result = await artifact_committer(
-            pr_context.repository,
-            target_branch,
-            target_path,
-            markdown_content,
-            commit_message,
-            pr_context.pr_number,
-        )
-    except Exception as error:
-        logger.exception(
-            "Unexpected commit failure for API spec artifact repo={repo} branch={branch} path={path} error={error}",
-            repo=pr_context.repository,
-            branch=target_branch,
-            path=target_path,
-            error=str(error),
-        )
-        return ApiSpecGenerationResult(
-            markdown=markdown_content,
-            destination=target_path,
-            target_path=target_path,
-            target_branch=target_branch,
-            commit_result=None,
-        )
-
-    if not commit_result.success:
-        logger.error(
-            "API spec markdown generated but GitHub commit failed repo={repo} branch={branch} path={path} "
-            "local_backup_path={local_backup_path} error={error}",
-            repo=commit_result.repository,
-            branch=commit_result.branch,
-            path=commit_result.file_path,
-            local_backup_path=commit_result.local_backup_path,
-            error=commit_result.error_message,
-        )
-        return ApiSpecGenerationResult(
-            markdown=markdown_content,
-            destination=commit_result.file_path,
-            target_path=target_path,
-            target_branch=target_branch,
-            commit_result=commit_result,
-        )
-
-    logger.info(
-        "Generated API spec/test-case output in target repo repo={repo} branch={branch} path={path} destination={destination}",
-        repo=pr_context.repository,
-        branch=target_branch,
-        path=target_path,
-        destination=commit_result.destination,
-    )
     return ApiSpecGenerationResult(
         markdown=markdown_content,
-        destination=commit_result.destination,
+        destination="Internal intermediate only; not committed to repository.",
         target_path=target_path,
         target_branch=target_branch,
-        commit_result=commit_result,
+        commit_result=None,
     )
 
 
