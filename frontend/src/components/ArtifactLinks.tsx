@@ -17,6 +17,8 @@ export function ArtifactLinks({ artifacts }: ArtifactLinksProps) {
             <a className="button" href={artifact.url} rel="noreferrer" target="_blank">
               View
             </a>
+          ) : key === "emailSummary" ? (
+            <span className="button button--disabled">Delivered via SendGrid</span>
           ) : (
             <span className="button button--disabled">Unavailable</span>
           )}

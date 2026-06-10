@@ -27,22 +27,22 @@ export function TeamDetails({ teamId }: TeamDetailsProps) {
   const team = organization?.teams.find((candidate) => candidate.id === teamId);
 
   if (isLoading) {
-    return <main className="page">Loading team...</main>;
+    return <p className="muted loading-text">Loading team...</p>;
   }
 
   if (error || !team) {
     return (
-      <main className="page">
+      <>
         <a className="back-link" href="/">
           Back to organization
         </a>
         <p className="error">{error || "Team not found."}</p>
-      </main>
+      </>
     );
   }
 
   return (
-    <main className="page">
+    <>
       <a className="back-link" href="/">
         Back to organization
       </a>
@@ -83,7 +83,7 @@ export function TeamDetails({ teamId }: TeamDetailsProps) {
           ))}
         </div>
       </section>
-    </main>
+    </>
   );
 }
 

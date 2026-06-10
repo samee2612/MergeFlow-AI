@@ -27,17 +27,17 @@ export function ServiceDetails({ serviceId }: ServiceDetailsProps) {
   const match = findService(organization, serviceId);
 
   if (isLoading) {
-    return <main className="page">Loading service...</main>;
+    return <p className="muted loading-text">Loading service...</p>;
   }
 
   if (error || !match) {
     return (
-      <main className="page">
+      <>
         <a className="back-link" href="/">
           Back to organization
         </a>
         <p className="error">{error || "Service not found."}</p>
-      </main>
+      </>
     );
   }
 
@@ -45,7 +45,7 @@ export function ServiceDetails({ serviceId }: ServiceDetailsProps) {
   const latestRun = runs[0];
 
   return (
-    <main className="page">
+    <>
       <a className="back-link" href={`/teams/${team.id}`}>
         Back to {team.name}
       </a>
@@ -113,7 +113,7 @@ export function ServiceDetails({ serviceId }: ServiceDetailsProps) {
           ))}
         </div>
       </section>
-    </main>
+    </>
   );
 }
 
