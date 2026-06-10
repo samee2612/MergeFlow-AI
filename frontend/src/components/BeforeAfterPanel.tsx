@@ -1,17 +1,17 @@
 const MANUAL_TASKS = [
-  "Write API documentation",
-  "Update OpenAPI spec",
-  "Build Postman collection",
-  "Update Notion workspace",
-  "Send release email",
+  "Manually prepare API documentation",
+  "Refresh OpenAPI specifications",
+  "Package validation artifacts",
+  "Update the team knowledge base",
+  "Draft stakeholder communications",
 ];
 
 const AUTOMATED_TASKS = [
-  "Gemini-generated API analysis",
-  "Validated OpenAPI YAML",
-  "Import-ready Postman JSON",
-  "Structured Notion pages",
-  "SendGrid release summary",
+  "AI-assisted change analysis",
+  "Validated OpenAPI deliverables",
+  "Import-ready test collections",
+  "Structured service documentation",
+  "Release summary distribution",
 ];
 
 export function BeforeAfterPanel() {
@@ -20,13 +20,13 @@ export function BeforeAfterPanel() {
       <div className="panel-header">
         <div>
           <h2>Manual vs MergeFlow</h2>
-          <p className="muted">What your team skips after every merged PR.</p>
+          <p className="muted">Standardize post-merge handoffs without adding operational overhead.</p>
         </div>
       </div>
       <div className="before-after__grid">
         <article className="before-after__column before-after__column--manual">
           <p className="eyebrow">Before</p>
-          <h3>Manual handoff</h3>
+          <h3>Manual process</h3>
           <ul>
             {MANUAL_TASKS.map((task) => (
               <li key={task}>{task}</li>
@@ -35,7 +35,7 @@ export function BeforeAfterPanel() {
         </article>
         <article className="before-after__column before-after__column--automated">
           <p className="eyebrow">After</p>
-          <h3>MergeFlow generated</h3>
+          <h3>MergeFlow governed</h3>
           <ul>
             {AUTOMATED_TASKS.map((task) => (
               <li key={task}>{task}</li>

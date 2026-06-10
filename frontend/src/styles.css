@@ -646,6 +646,33 @@ input {
   justify-content: space-between;
 }
 
+.spotlight__primary {
+  min-width: 0;
+}
+
+.spotlight__summary {
+  color: #cbd5e1;
+  font-size: 17px;
+  line-height: 1.5;
+  margin: 10px 0 0;
+  max-width: 760px;
+}
+
+.spotlight__details {
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.spotlight__details span {
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 7px 10px;
+}
+
 .spotlight__meta {
   align-items: flex-end;
   display: flex;

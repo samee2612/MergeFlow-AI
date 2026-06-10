@@ -104,6 +104,7 @@ def _summary_from_metadata(metadata: dict[str, Any]) -> dict[str, Any] | None:
             "prNumber": metadata.get("prNumber"),
             "prTitle": pr_title,
             "repository": repository,
+            "author": metadata.get("author"),
             "status": status,
             "timestamp": timestamp,
             "changeScope": metadata.get("changeScope"),

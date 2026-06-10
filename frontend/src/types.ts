@@ -14,6 +14,7 @@ export type RunSummary = {
   prNumber: number | string;
   prTitle: string;
   repository: string;
+  author?: string;
   status: RunStatus;
   timestamp: string;
   teamId: string;

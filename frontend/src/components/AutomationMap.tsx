@@ -1,9 +1,9 @@
 const STEPS = [
-  { id: "merge", label: "PR Merged", detail: "GitHub webhook fires on merge" },
-  { id: "classify", label: "Classify", detail: "Scope and change type detected" },
-  { id: "generate", label: "Generate", detail: "API docs, OpenAPI, Postman" },
-  { id: "notion", label: "Notion", detail: "Service and PR pages updated" },
-  { id: "email", label: "Notify", detail: "Release summary email sent" },
+  { id: "merge", label: "Merge Captured", detail: "GitHub webhook records the approved change" },
+  { id: "classify", label: "Impact Classified", detail: "Scope and service context are identified" },
+  { id: "generate", label: "Artifacts Prepared", detail: "API docs, OpenAPI, and Postman outputs" },
+  { id: "notion", label: "Knowledge Updated", detail: "Service documentation is refreshed" },
+  { id: "email", label: "Stakeholders Notified", detail: "Release summary delivered to the team" },
 ];
 
 export function AutomationMap() {
@@ -12,7 +12,7 @@ export function AutomationMap() {
       <div className="panel-header">
         <div>
           <h2>Automation Flow</h2>
-          <p className="muted">Hover each step to see what MergeFlow handles after merge.</p>
+          <p className="muted">A controlled handoff from merged code to operational documentation.</p>
         </div>
       </div>
       <div className="automation-map__track">

@@ -31,8 +31,6 @@ export function Dashboard() {
   }, []);
 
   const serviceCount = organization?.teams.reduce((count, team) => count + team.services.length, 0) ?? 0;
-  const successCount = runs.filter((run) => run.status === "SUCCESS").length;
-  const automatedCount = runs.filter((run) => run.action !== "track_only").length;
 
   const filteredRuns = useMemo(() => {
     return runs.filter((run) => {
@@ -53,13 +51,13 @@ export function Dashboard() {
   return (
     <>
       <AnimatedHero
-        eyebrow="MergeFlow Command Center"
-        highlight="automated"
+        eyebrow="Enterprise Post-Merge Operations"
+        highlight="governed"
         subtitle={
           organization?.description ??
-          "Track service documentation, API specs, Postman collections, Notion updates, and release emails after PR merges."
+          "Give engineering leaders a trusted view of every merged change, generated artifact, documentation update, and release handoff across critical services."
         }
-        title="Post-merge workflow,"
+        title="Merge delivery,"
       />
 
       {isLoading ? <p className="muted loading-text">Loading command center...</p> : null}
@@ -71,22 +69,12 @@ export function Dashboard() {
             <article className="metric-card metric-card--glass">
               <p className="eyebrow">Teams</p>
               <strong>{organization.teams.length}</strong>
-              <span>Engineering groups</span>
+              <span>Operating groups connected to MergeFlow</span>
             </article>
             <article className="metric-card metric-card--glass">
               <p className="eyebrow">Services</p>
               <strong>{serviceCount}</strong>
-              <span>Monitored repositories</span>
-            </article>
-            <article className="metric-card metric-card--glass">
-              <p className="eyebrow">Runs</p>
-              <strong>{runs.length}</strong>
-              <span>Processed PR merges</span>
-            </article>
-            <article className="metric-card metric-card--glass">
-              <p className="eyebrow">Automated</p>
-              <strong>{automatedCount}</strong>
-              <span>{successCount} successful artifact runs</span>
+              <span>Repository-backed services under governance</span>
             </article>
           </section>
 
@@ -101,7 +89,7 @@ export function Dashboard() {
             <div className="panel-header panel-header--stack">
               <div>
                 <h2>Teams</h2>
-                <p className="muted">Explore services and automation history by engineering group.</p>
+                <p className="muted">Review service ownership and delivery activity by engineering group.</p>
               </div>
             </div>
             <div className="team-grid">
@@ -124,7 +112,7 @@ export function Dashboard() {
             <div className="panel-header panel-header--stack">
               <div>
                 <h2>Service Catalog</h2>
-                <p className="muted">Each service maps to a GitHub repository monitored by MergeFlow.</p>
+                <p className="muted">Every service maps to a monitored repository with post-merge automation coverage.</p>
               </div>
             </div>
             <div className="service-grid">
@@ -148,7 +136,7 @@ export function Dashboard() {
         <div className="panel-header panel-header--stack">
           <div>
             <h2>Recent Runs</h2>
-            <p className="muted">Preview or open a run to inspect classification, artifacts, and pipeline status.</p>
+            <p className="muted">Inspect recent merged PRs, generated deliverables, and release handoff status.</p>
           </div>
           <div className="panel-toolbar">
             <input
