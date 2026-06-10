@@ -11,6 +11,7 @@ type ServiceDetailsProps = {
 type FeatureGroup = {
   id: string;
   branchName: string;
+  label: string;
   latestRun: RunSummary;
   runs: RunSummary[];
   authors: string[];
@@ -55,6 +56,7 @@ export function ServiceDetails({ serviceId }: ServiceDetailsProps) {
 
   const { service, team } = match;
   const selectedFeature = featureGroups.find((feature) => feature.id === selectedFeatureId) ?? featureGroups[0];
+  const serviceActivitySummary = buildServiceActivitySummary(service, featureGroups);
 
   return (
     <>
@@ -66,11 +68,7 @@ export function ServiceDetails({ serviceId }: ServiceDetailsProps) {
         <p className="eyebrow">{team.name}</p>
         <h1>{service.name}</h1>
         <p className="muted">{service.description}</p>
-        <p className="service-brief">
-          {service.name} is monitored by MergeFlow as a governed delivery surface for {team.name}. Each merged branch
-          is treated as a feature stream, with related PRs rolled into one service-level view of change, artifacts, and
-          operational handoff.
-        </p>
+        <p className="service-brief">{serviceActivitySummary}</p>
       </header>
 
       <section className="metrics-grid">
@@ -112,7 +110,7 @@ export function ServiceDetails({ serviceId }: ServiceDetailsProps) {
                   type="button"
                 >
                   <div>
-                    <p className="eyebrow">Feature Branch</p>
+                    <p className="eyebrow">{feature.label}</p>
                     <h3>{feature.branchName}</h3>
                     <p className="muted">{feature.summary}</p>
                   </div>
@@ -164,8 +162,8 @@ function FeatureDetail({ animationKey, feature, service, team }: FeatureDetailPr
       </div>
 
       <p className="feature-detail__summary">
-        {service.name} accumulated {feature.runs.length} merged PR{feature.runs.length === 1 ? "" : "s"} for this
-        feature under {team.name}. Current feature summary: {feature.summary}
+        {service.name} has accumulated {feature.runs.length} merged PR{feature.runs.length === 1 ? "" : "s"} under
+        this feature for {team.name}. Current feature description: {feature.summary}
       </p>
 
       <div className="feature-detail__meta">
@@ -222,22 +220,24 @@ function groupRunsByFeature(runs: RunSummary[]): FeatureGroup[] {
   const groups = new Map<string, RunSummary[]>();
 
   for (const run of runs) {
-    const branchName = normalizedFeatureBranch(run);
-    const groupRuns = groups.get(branchName) ?? [];
+    const featureKey = normalizedFeatureKey(run);
+    const groupRuns = groups.get(featureKey) ?? [];
     groupRuns.push(run);
-    groups.set(branchName, groupRuns);
+    groups.set(featureKey, groupRuns);
   }
 
-  return Array.from(groups.entries()).map(([branchName, groupRuns]) => {
+  return Array.from(groups.entries()).map(([featureKey, groupRuns]) => {
     const sortedRuns = [...groupRuns].sort(
       (left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
     );
     const latestRun = sortedRuns[0];
     const authors = Array.from(new Set(sortedRuns.map((run) => run.author).filter(Boolean))) as string[];
+    const hasBranchName = Boolean(latestRun.headBranch?.trim());
 
     return {
-      id: branchName,
-      branchName,
+      id: featureKey,
+      branchName: displayFeatureName(latestRun),
+      label: hasBranchName ? "Feature Branch" : "Feature",
       latestRun,
       runs: sortedRuns,
       authors,
@@ -246,12 +246,21 @@ function groupRunsByFeature(runs: RunSummary[]): FeatureGroup[] {
   });
 }
 
-function normalizedFeatureBranch(run: RunSummary) {
-  return run.headBranch?.trim() || `feature/pr-${run.prNumber}`;
+function normalizedFeatureKey(run: RunSummary) {
+  const branch = run.headBranch?.trim();
+  if (branch) {
+    return `branch:${branch.toLowerCase()}`;
+  }
+
+  return `title:${slugify(run.prTitle || `pr-${run.prNumber}`)}`;
+}
+
+function displayFeatureName(run: RunSummary) {
+  return run.headBranch?.trim() || run.prTitle || `Feature PR #${run.prNumber}`;
 }
 
 function buildAccumulatedFeatureSummary(runs: RunSummary[]) {
-  const titles = runs.map((run) => run.prTitle).filter(Boolean);
+  const titles = uniqueNonEmpty(runs.map((run) => run.prTitle));
   if (titles.length === 0) {
     return "This feature has processed changes, but no PR summary is available yet.";
   }
@@ -264,6 +273,31 @@ function buildAccumulatedFeatureSummary(runs: RunSummary[]) {
     .reverse()
     .map((title, index) => `${index + 1}. ${title}`)
     .join(" ");
+}
+
+function buildServiceActivitySummary(service: Service, features: FeatureGroup[]) {
+  if (features.length === 0) {
+    return `${service.name} has no merged feature activity yet. Once changes land, this description will summarize the active service capabilities and delivery updates.`;
+  }
+
+  const uniqueSummaries = uniqueNonEmpty(features.flatMap((feature) => feature.runs.map((run) => run.prTitle)));
+  const totalPrs = features.reduce((count, feature) => count + feature.runs.length, 0);
+  const summaryText = uniqueSummaries.slice(0, 3).join("; ");
+  const overflow = uniqueSummaries.length > 3 ? `, plus ${uniqueSummaries.length - 3} more updates` : "";
+
+  return `${service.name} currently reflects ${features.length} feature stream${features.length === 1 ? "" : "s"} across ${totalPrs} merged PR${totalPrs === 1 ? "" : "s"}: ${summaryText}${overflow}.`;
+}
+
+function uniqueNonEmpty(values: Array<string | undefined>) {
+  return Array.from(new Set(values.map((value) => value?.trim()).filter(Boolean))) as string[];
+}
+
+function slugify(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function pipelineStepsForFeature(run: RunSummary) {
