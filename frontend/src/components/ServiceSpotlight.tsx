@@ -21,8 +21,8 @@ export function ServiceSpotlight({ run, service, teamName }: ServiceSpotlightPro
             PR #{run.prNumber}: {run.prTitle}
           </p>
           <div className="spotlight__details">
-            <span>Published by {author}</span>
-            <span>{teamName}</span>
+            <span>Author: {author}</span>
+            <span>Team: {teamName}</span>
           </div>
         </div>
         <div className="spotlight__meta">

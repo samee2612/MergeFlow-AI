@@ -22,6 +22,9 @@ class RunContext(Protocol):
     title: str
     author: str
     merged_at: str | None
+    head_branch: str
+    base_branch: str
+    default_branch: str
 
 
 RUN_STATUSES = frozenset(
@@ -64,6 +67,9 @@ def create_run(pr_context: RunContext) -> str:
         "prTitle": pr_context.title,
         "author": pr_context.author,
         "mergedAt": pr_context.merged_at,
+        "headBranch": pr_context.head_branch,
+        "baseBranch": pr_context.base_branch,
+        "defaultBranch": pr_context.default_branch,
         "status": "RECEIVED",
         "createdAt": now,
         "updatedAt": now,
@@ -90,6 +96,9 @@ def update_run(pr_context: RunContext, **fields: Any) -> None:
             "prTitle": pr_context.title,
             "author": pr_context.author,
             "mergedAt": pr_context.merged_at,
+            "headBranch": pr_context.head_branch,
+            "baseBranch": pr_context.base_branch,
+            "defaultBranch": pr_context.default_branch,
             "createdAt": _utc_now(),
         }
 

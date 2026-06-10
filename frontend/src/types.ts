@@ -15,6 +15,8 @@ export type RunSummary = {
   prTitle: string;
   repository: string;
   author?: string;
+  headBranch?: string;
+  baseBranch?: string;
   status: RunStatus;
   timestamp: string;
   teamId: string;
