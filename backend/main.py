@@ -14,6 +14,7 @@ from backend.dashboard_runs import get_dashboard_run, list_dashboard_runs, list_
 from backend.github_client import fetch_pull_request_changed_files
 from backend.organization import get_organization
 from backend.pipeline import PullRequestContext, run_post_merge_pipeline
+from backend.run_store import create_run
 from backend.worker import run_post_merge_pipeline_task
 
 load_dotenv()
@@ -120,6 +121,9 @@ async def _process_merged_pr_webhook(payload: dict[str, Any], repo_name: str, pr
         changed_files = []
 
     pr_context = build_pull_request_context(payload, changed_files)
+    # Immediately record the run so it displays on the dashboard without waiting for heavy processing
+    create_run(pr_context)
+
     enqueued = False
     try:
         run_post_merge_pipeline_task.apply_async(args=[asdict(pr_context)], retry=False)
@@ -138,7 +142,9 @@ async def _process_merged_pr_webhook(payload: dict[str, Any], repo_name: str, pr
         )
 
     if not enqueued:
-        await run_post_merge_pipeline(pr_context)
+        asyncio.create_task(run_post_merge_pipeline(pr_context))
+        await asyncio.sleep(0)
+
 
 
 @app.post("/webhook")
