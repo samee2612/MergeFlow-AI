@@ -150,7 +150,6 @@ async def _process_merged_pr_webhook(payload: dict[str, Any], repo_name: str, pr
 @app.post("/webhook")
 async def github_webhook(
     request: Request,
-    background_tasks: BackgroundTasks,
     x_github_event: str | None = Header(default=None),
     x_hub_signature_256: str | None = Header(default=None),
 ) -> dict[str, str]:
@@ -188,8 +187,9 @@ async def github_webhook(
         logger.warning("Ignoring merged PR because repository or PR number is missing")
         return {"status": "ignored"}
 
-    background_tasks.add_task(_process_merged_pr_webhook, payload, repo_name, pr_number)
+    asyncio.create_task(_process_merged_pr_webhook(payload, repo_name, pr_number))
     return {"status": "accepted"}
+
 
 
 
