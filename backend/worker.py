@@ -12,7 +12,24 @@ from backend.pipeline import PullRequestContext, run_post_merge_pipeline
 
 load_dotenv()
 
-redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+def _resolve_redis_url() -> str:
+    redis_url = (
+        os.getenv("REDIS_URL")
+        or os.getenv("REDIS_PRIVATE_URL")
+        or os.getenv("CELERY_BROKER_URL")
+    )
+    if redis_url:
+        return redis_url
+    redis_host = os.getenv("REDISHOST")
+    if redis_host:
+        password = os.getenv("REDISPASSWORD", "")
+        auth = f":{password}@" if password else ""
+        port = os.getenv("REDISPORT", "6379")
+        return f"redis://{auth}{redis_host}:{port}/0"
+    return "redis://localhost:6379/0"
+
+
+redis_url = _resolve_redis_url()
 
 celery_app = Celery(
     "mergeflow",
