@@ -109,6 +109,8 @@ async def run_detail(run_id: str) -> dict[str, Any]:
 
 
 async def _process_merged_pr_webhook(payload: dict[str, Any], repo_name: str, pr_number: int) -> None:
+    # Yield to let Uvicorn finish sending the HTTP 200 response to GitHub before starting processing
+    await asyncio.sleep(0.05)
     try:
         changed_files = await fetch_pull_request_changed_files(repo_name, pr_number)
     except Exception as exc:
