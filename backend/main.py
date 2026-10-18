@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import os
@@ -12,7 +13,7 @@ from loguru import logger
 from backend.dashboard_runs import get_dashboard_run, list_dashboard_runs, list_dashboard_runs_for_service, list_dashboard_runs_for_team
 from backend.github_client import fetch_pull_request_changed_files
 from backend.organization import get_organization
-from backend.pipeline import PullRequestContext
+from backend.pipeline import PullRequestContext, run_post_merge_pipeline
 from backend.worker import run_post_merge_pipeline_task
 
 load_dotenv()
@@ -148,13 +149,22 @@ async def github_webhook(
 
     changed_files = await fetch_pull_request_changed_files(repo_name, pr_number)
     pr_context = build_pull_request_context(payload, changed_files)
-    run_post_merge_pipeline_task.delay(asdict(pr_context))
+    try:
+        run_post_merge_pipeline_task.delay(asdict(pr_context))
+        logger.info(
+            "Enqueued post-merge pipeline to Celery repo={repo} pr_number={pr_number}",
+            repo=repo_name,
+            pr_number=pr_number,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Celery broker unavailable error={error}; running post-merge pipeline in background task fallback repo={repo} pr_number={pr_number}",
+            error=exc,
+            repo=repo_name,
+            pr_number=pr_number,
+        )
+        asyncio.create_task(run_post_merge_pipeline(pr_context))
 
-    logger.info(
-        "Enqueued post-merge pipeline repo={repo} pr_number={pr_number}",
-        repo=repo_name,
-        pr_number=pr_number,
-    )
     return {"status": "accepted"}
 
 

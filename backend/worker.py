@@ -36,6 +36,11 @@ celery_app = Celery(
     broker=redis_url,
     backend=redis_url,
 )
+celery_app.conf.update(
+    broker_connection_retry_on_startup=True,
+    broker_connection_timeout=3.0,
+    broker_transport_options={"socket_timeout": 3.0, "socket_connect_timeout": 3.0},
+)
 
 
 @celery_app.task(name="run_post_merge_pipeline")
