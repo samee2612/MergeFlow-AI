@@ -1,6 +1,15 @@
 import type { Organization, RunDetail, RunSummary } from "./types";
 
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
+function resolveBackendUrl(): string {
+  const envUrl = (import.meta.env.VITE_BACKEND_URL as string | undefined)?.trim();
+  let url = envUrl || "https://mergeflow-ai-production.up.railway.app";
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    url = `https://${url}`;
+  }
+  return url.replace(/\/+$/, "");
+}
+
+const API_BASE_URL = resolveBackendUrl();
 
 const DEFAULT_HEADERS: HeadersInit = {
   "ngrok-skip-browser-warning": "true",
