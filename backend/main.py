@@ -6,7 +6,7 @@ from dataclasses import asdict
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
@@ -107,9 +107,44 @@ async def run_detail(run_id: str) -> dict[str, Any]:
     return run
 
 
+async def _process_merged_pr_webhook(payload: dict[str, Any], repo_name: str, pr_number: int) -> None:
+    try:
+        changed_files = await fetch_pull_request_changed_files(repo_name, pr_number)
+    except Exception as exc:
+        logger.warning(
+            "Failed fetching changed files from GitHub repo={repo} pr_number={pr_number} error={error}",
+            repo=repo_name,
+            pr_number=pr_number,
+            error=exc,
+        )
+        changed_files = []
+
+    pr_context = build_pull_request_context(payload, changed_files)
+    enqueued = False
+    try:
+        run_post_merge_pipeline_task.apply_async(args=[asdict(pr_context)], retry=False)
+        enqueued = True
+        logger.info(
+            "Enqueued post-merge pipeline to Celery repo={repo} pr_number={pr_number}",
+            repo=repo_name,
+            pr_number=pr_number,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Celery dispatch unavailable error={error}; running pipeline directly in background repo={repo} pr_number={pr_number}",
+            error=exc,
+            repo=repo_name,
+            pr_number=pr_number,
+        )
+
+    if not enqueued:
+        await run_post_merge_pipeline(pr_context)
+
+
 @app.post("/webhook")
 async def github_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_github_event: str | None = Header(default=None),
     x_hub_signature_256: str | None = Header(default=None),
 ) -> dict[str, str]:
@@ -147,25 +182,9 @@ async def github_webhook(
         logger.warning("Ignoring merged PR because repository or PR number is missing")
         return {"status": "ignored"}
 
-    changed_files = await fetch_pull_request_changed_files(repo_name, pr_number)
-    pr_context = build_pull_request_context(payload, changed_files)
-    try:
-        run_post_merge_pipeline_task.delay(asdict(pr_context))
-        logger.info(
-            "Enqueued post-merge pipeline to Celery repo={repo} pr_number={pr_number}",
-            repo=repo_name,
-            pr_number=pr_number,
-        )
-    except Exception as exc:
-        logger.warning(
-            "Celery broker unavailable error={error}; running post-merge pipeline in background task fallback repo={repo} pr_number={pr_number}",
-            error=exc,
-            repo=repo_name,
-            pr_number=pr_number,
-        )
-        asyncio.create_task(run_post_merge_pipeline(pr_context))
-
+    background_tasks.add_task(_process_merged_pr_webhook, payload, repo_name, pr_number)
     return {"status": "accepted"}
+
 
 
 if __name__ == "__main__":

@@ -156,18 +156,35 @@ def _runs_backend_name() -> str:
     return "redis" if _use_redis_runs_backend() else "filesystem"
 
 
+def _resolve_redis_url() -> str:
+    redis_url = (
+        os.getenv("REDIS_URL")
+        or os.getenv("REDIS_PRIVATE_URL")
+        or os.getenv("CELERY_BROKER_URL")
+    )
+    if redis_url and redis_url.strip():
+        return redis_url.strip()
+    redis_host = os.getenv("REDISHOST")
+    if redis_host and redis_host.strip():
+        password = os.getenv("REDISPASSWORD", "")
+        auth = f":{password}@" if password else ""
+        port = os.getenv("REDISPORT", "6379")
+        return f"redis://{auth}{redis_host.strip()}:{port}/0"
+    return ""
+
+
 def _use_redis_runs_backend() -> bool:
-    backend = os.getenv("MERGEFLOW_RUNS_BACKEND", "filesystem").strip().lower()
+    backend = os.getenv("MERGEFLOW_RUNS_BACKEND", "").strip().lower()
+    if backend == "filesystem":
+        return False
     if backend == "redis":
-        return bool(_redis_url())
-    return False
+        return bool(_resolve_redis_url())
+    # Default to Redis if Redis credentials/host are present, otherwise filesystem
+    return bool(_resolve_redis_url())
 
 
 def _redis_url() -> str:
-    return (
-        os.getenv("REDIS_URL", "").strip()
-        or os.getenv("CELERY_BROKER_URL", "").strip()
-    )
+    return _resolve_redis_url()
 
 
 class RunsBackend(Protocol):
@@ -217,32 +234,47 @@ class RedisRunsBackend:
     def __init__(self, redis_url: str) -> None:
         if redis is None:
             raise RuntimeError("redis package is required for MERGEFLOW_RUNS_BACKEND=redis")
-        self._client = redis.Redis.from_url(redis_url, decode_responses=True)
+        self._client = redis.Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_timeout=3.0,
+            socket_connect_timeout=3.0,
+        )
 
     def read(self, run_id: str) -> dict[str, Any]:
-        raw = self._client.get(f"{REDIS_RUN_KEY_PREFIX}{run_id}")
-        if not raw:
-            return {}
         try:
+            raw = self._client.get(f"{REDIS_RUN_KEY_PREFIX}{run_id}")
+            if not raw:
+                return {}
             payload = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-        return payload if isinstance(payload, dict) else {}
+            return payload if isinstance(payload, dict) else {}
+        except Exception as exc:
+            logger.warning("Redis read failed for run_id={run_id} error={error}", run_id=run_id, error=exc)
+            return FileSystemRunsBackend().read(run_id)
 
     def write(self, run_id: str, payload: dict[str, Any]) -> None:
-        serialized = json.dumps(payload, indent=2, sort_keys=True)
-        self._client.set(f"{REDIS_RUN_KEY_PREFIX}{run_id}", serialized)
-        timestamp = _timestamp_score(payload.get("updatedAt") or payload.get("createdAt"))
-        self._client.zadd(REDIS_RUN_INDEX_KEY, {run_id: timestamp})
+        try:
+            serialized = json.dumps(payload, indent=2, sort_keys=True)
+            self._client.set(f"{REDIS_RUN_KEY_PREFIX}{run_id}", serialized)
+            timestamp = _timestamp_score(payload.get("updatedAt") or payload.get("createdAt"))
+            self._client.zadd(REDIS_RUN_INDEX_KEY, {run_id: timestamp})
+        except Exception as exc:
+            logger.warning("Redis write failed for run_id={run_id} error={error}", run_id=run_id, error=exc)
+            FileSystemRunsBackend().write(run_id, payload)
 
     def list_all(self) -> list[dict[str, Any]]:
-        run_ids = self._client.zrevrange(REDIS_RUN_INDEX_KEY, 0, -1)
-        payloads: list[dict[str, Any]] = []
-        for run_id in run_ids:
-            payload = self.read(run_id)
-            if payload:
-                payloads.append(payload)
-        return payloads
+        try:
+            run_ids = self._client.zrevrange(REDIS_RUN_INDEX_KEY, 0, -1)
+            payloads: list[dict[str, Any]] = []
+            for run_id in run_ids:
+                payload = self.read(run_id)
+                if payload:
+                    payloads.append(payload)
+            return payloads
+        except Exception as exc:
+            logger.warning("Redis list_all failed error={error}", error=exc)
+            return FileSystemRunsBackend().list_all()
+
 
 
 def _get_runs_backend() -> RunsBackend:
