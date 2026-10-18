@@ -2,8 +2,12 @@ import type { Organization, RunDetail, RunSummary } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
 
+const DEFAULT_HEADERS: HeadersInit = {
+  "ngrok-skip-browser-warning": "true",
+};
+
 export async function fetchRuns(): Promise<RunSummary[]> {
-  const response = await fetch(`${API_BASE_URL}/runs`);
+  const response = await fetch(`${API_BASE_URL}/runs`, { headers: DEFAULT_HEADERS });
   if (!response.ok) {
     throw new Error("Could not load MergeFlow runs.");
   }
@@ -11,7 +15,7 @@ export async function fetchRuns(): Promise<RunSummary[]> {
 }
 
 export async function fetchOrganization(): Promise<Organization> {
-  const response = await fetch(`${API_BASE_URL}/organization`);
+  const response = await fetch(`${API_BASE_URL}/organization`, { headers: DEFAULT_HEADERS });
   if (!response.ok) {
     throw new Error("Could not load organization.");
   }
@@ -19,7 +23,7 @@ export async function fetchOrganization(): Promise<Organization> {
 }
 
 export async function fetchTeamRuns(teamId: string): Promise<RunSummary[]> {
-  const response = await fetch(`${API_BASE_URL}/teams/${encodeURIComponent(teamId)}/runs`);
+  const response = await fetch(`${API_BASE_URL}/teams/${encodeURIComponent(teamId)}/runs`, { headers: DEFAULT_HEADERS });
   if (!response.ok) {
     throw new Error("Could not load team runs.");
   }
@@ -27,7 +31,7 @@ export async function fetchTeamRuns(teamId: string): Promise<RunSummary[]> {
 }
 
 export async function fetchServiceRuns(serviceId: string): Promise<RunSummary[]> {
-  const response = await fetch(`${API_BASE_URL}/services/${encodeURIComponent(serviceId)}/runs`);
+  const response = await fetch(`${API_BASE_URL}/services/${encodeURIComponent(serviceId)}/runs`, { headers: DEFAULT_HEADERS });
   if (!response.ok) {
     throw new Error("Could not load service runs.");
   }
@@ -35,7 +39,7 @@ export async function fetchServiceRuns(serviceId: string): Promise<RunSummary[]>
 }
 
 export async function fetchRun(runId: string): Promise<RunDetail> {
-  const response = await fetch(`${API_BASE_URL}/runs/${encodeURIComponent(runId)}`);
+  const response = await fetch(`${API_BASE_URL}/runs/${encodeURIComponent(runId)}`, { headers: DEFAULT_HEADERS });
   if (!response.ok) {
     throw new Error("Could not load MergeFlow run details.");
   }

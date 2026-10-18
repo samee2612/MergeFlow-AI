@@ -517,14 +517,34 @@ def summarize_postman_collection(collection_json: str) -> PostmanSummary:
 
 
 def extract_markdown_section(markdown: str, section_title: str) -> str:
-    escaped_title = re.escape(section_title)
-    pattern = re.compile(
-        rf"^##\s+(?:\d+\.\s+)?{escaped_title}\s*$"
-        rf"(?P<body>.*?)(?=^##\s+|\Z)",
-        flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+    escaped = re.escape(section_title)
+    # Prefer section headers (##, ###, ####) to avoid matching top-level document H1 titles
+    header_pattern = re.compile(
+        r"^(#{2,4})\s+(?:\d+\.\s*)?[^\n]*\b" + escaped + r"\b[^\n]*$",
+        flags=re.IGNORECASE | re.MULTILINE,
     )
-    match = pattern.search(markdown)
-    return match.group("body").strip() if match else ""
+    match = header_pattern.search(markdown)
+    if not match:
+        # Fallback to level 1 header only if the header starts with the section title (avoiding document titles)
+        h1_pattern = re.compile(
+            r"^(#)\s+(?:\d+\.\s*)?" + escaped + r"(?:\b[^\n]*)?$",
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+        match = h1_pattern.search(markdown)
+        if not match:
+            return ""
+
+    header_level = len(match.group(1))
+    start_pos = match.end()
+
+    # Section ends at next header of equal or higher level (<= header_level)
+    next_header_pattern = re.compile(r"^#{1," + str(header_level) + r"}\s+", flags=re.MULTILINE)
+    next_header = next_header_pattern.search(markdown[start_pos:])
+    if next_header:
+        body = markdown[start_pos : start_pos + next_header.start()]
+    else:
+        body = markdown[start_pos:]
+    return body.strip()
 
 
 def write_notion_run_metadata(pr_context: PullRequestContext, result: NotionSyncResult) -> str:
