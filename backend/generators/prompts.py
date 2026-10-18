@@ -76,6 +76,9 @@ Changed files:
 Directly related files considered:
 {related_files}
 
+Historical similar PRs retrieved via RAG (for architectural consistency only; document only the current PR's endpoints):
+{similar_prs_context}
+
 Unified diff patches by file:
 {patches}
 

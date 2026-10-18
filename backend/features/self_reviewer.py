@@ -15,7 +15,7 @@ load_dotenv()
 
 GITHUB_API_BASE_URL = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
-from backend.gemini_config import get_gemini_api_key, get_gemini_model
+from backend.gemini_config import get_gemini_api_key, get_gemini_model, try_generate_with_claude
 MAX_DIFF_CHARS = 20000
 SELF_REVIEW_HEADING = "## MergeFlow AI Self Review"
 
@@ -46,41 +46,58 @@ def run_self_review(repo: str, pr_number: int, diff_text: str) -> list[SelfRevie
 
 
 def _analyze_diff_with_gemini(diff_text: str) -> list[SelfReviewFinding]:
+    system_instruction = (
+        "You are MergeFlow AI's pre-merge self-review bot. "
+        "Analyze only the added or changed lines in the diff. "
+        "Return strict JSON only, with no markdown or commentary."
+    )
+    user_prompt = (
+        "Find concrete issues in this pull request diff:\n"
+        "1. Hardcoded values that should be config, including URLs, API keys, and magic numbers.\n"
+        "2. Leftover TODO, FIXME, console.log, or print statements.\n"
+        "3. New functions or endpoints without corresponding tests in the diff.\n"
+        "4. Missing error handling on new API calls.\n\n"
+        "Return JSON in this exact shape:\n"
+        "{\n"
+        '  "findings": [\n'
+        "    {\n"
+        '      "severity": "warning" | "info",\n'
+        '      "file": "path/to/file.py" | null,\n'
+        '      "line": 123 | null,\n'
+        '      "explanation": "clear explanation of the issue",\n'
+        '      "fix": "what the developer should change"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Use warning for likely bugs, security risks, missing error handling, or missing tests. "
+        "Use info for cleanup reminders like TODOs or debug statements. "
+        "If there are no issues, return {\"findings\": []}.\n\n"
+        f"Diff:\n{diff_text[:MAX_DIFF_CHARS]}"
+    )
+
+    claude_text = try_generate_with_claude(
+        prompt=user_prompt,
+        system_instruction=system_instruction,
+        max_output_tokens=2000,
+        temperature=0.0,
+        component="self_reviewer",
+    )
+    if claude_text:
+        try:
+            payload = json.loads(_strip_json_code_fence(claude_text))
+            return _validate_findings(payload.get("findings", []))
+        except Exception as error:
+            logger.warning("Claude self-review parse failed, falling back to Gemini error={error}", error=str(error))
+
     api_key = get_gemini_api_key()
 
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
         get_gemini_model(),
-        system_instruction=(
-            "You are MergeFlow AI's pre-merge self-review bot. "
-            "Analyze only the added or changed lines in the diff. "
-            "Return strict JSON only, with no markdown or commentary."
-        ),
+        system_instruction=system_instruction,
     )
     response = model.generate_content(
-        (
-            "Find concrete issues in this pull request diff:\n"
-            "1. Hardcoded values that should be config, including URLs, API keys, and magic numbers.\n"
-            "2. Leftover TODO, FIXME, console.log, or print statements.\n"
-            "3. New functions or endpoints without corresponding tests in the diff.\n"
-            "4. Missing error handling on new API calls.\n\n"
-            "Return JSON in this exact shape:\n"
-            "{\n"
-            '  "findings": [\n'
-            "    {\n"
-            '      "severity": "warning" | "info",\n'
-            '      "file": "path/to/file.py" | null,\n'
-            '      "line": 123 | null,\n'
-            '      "explanation": "clear explanation of the issue",\n'
-            '      "fix": "what the developer should change"\n'
-            "    }\n"
-            "  ]\n"
-            "}\n\n"
-            "Use warning for likely bugs, security risks, missing error handling, or missing tests. "
-            "Use info for cleanup reminders like TODOs or debug statements. "
-            "If there are no issues, return {\"findings\": []}.\n\n"
-            f"Diff:\n{diff_text[:MAX_DIFF_CHARS]}"
-        ),
+        user_prompt,
         generation_config=genai.types.GenerationConfig(
             max_output_tokens=2000,
             temperature=0,
@@ -237,7 +254,9 @@ def _find_existing_self_review_comment(repo: str, pr_number: int, token: str) ->
 
 
 def _get_github_token() -> str:
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
+    from backend.github_client import _github_token
+
+    token = _github_token()
     if not token:
         raise RuntimeError("GITHUB_TOKEN is not configured")
 

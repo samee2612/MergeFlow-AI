@@ -73,6 +73,8 @@ def get_dashboard_run(run_id: str) -> dict[str, Any] | None:
         ),
         "apiOverview": metadata.get("apiOverview") if isinstance(metadata.get("apiOverview"), list) else [],
         "testCases": metadata.get("testCases") if isinstance(metadata.get("testCases"), list) else [],
+        "rag": metadata.get("rag") if isinstance(metadata.get("rag"), dict) else {},
+        "mcp": metadata.get("mcp") if isinstance(metadata.get("mcp"), dict) else {},
     }
 
 

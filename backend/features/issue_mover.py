@@ -91,7 +91,9 @@ def _close_issue_as_completed(repo: str, issue_number: int) -> None:
 
 
 def _get_github_token() -> str:
-    token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
+    from backend.github_client import _github_token
+
+    token = _github_token()
     if not token:
         raise RuntimeError("GITHUB_TOKEN is not configured")
 

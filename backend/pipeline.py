@@ -4,14 +4,25 @@ from dataclasses import dataclass
 
 from loguru import logger
 
+from backend.agent import get_agent_provider_status
 from backend.classifier.diff_classifier import BackendDiffClassification, classify_backend_diff
 from backend.classifier.scope_classifier import classify_change_scope
 from backend.generators.api_spec_generator import ApiSpecGenerationResult, generate_api_spec_and_test_cases
 from backend.generators.email_generator import generate_and_send_release_email
 from backend.generators.notion_draft_generator import NotionDocumentationResult, update_notion_documentation
+from backend.generators.notion_generator import summarize_openapi
 from backend.generators.openapi_generator import OpenApiGenerationResult, generate_openapi_yaml
 from backend.generators.postman_generator import PostmanGenerationResult, generate_postman_collection
 from backend.github_client import delete_repository_file, fetch_pull_request_diff
+from backend.mcp_servers.chromadb_mcp import mcp_retrieve_similar_prs, mcp_store_pr_context
+from backend.mcp_servers.github_mcp import (
+    mcp_fetch_file_content,
+    mcp_fetch_pr_diff,
+    mcp_run_github_side_effects,
+)
+from backend.mcp_servers.notion_mcp import mcp_update_notion_documentation
+from backend.mcp_servers.sendgrid_mcp import mcp_generate_and_send_release_email
+from backend.rag.embedder import build_pr_embedding_document
 from backend.run_store import create_run, update_run
 from backend.service_resolver import ServiceResolution, resolve_service
 
@@ -116,10 +127,34 @@ async def classify_accepted_backend_pr(
             summary="Unable to classify backend change.",
         )
 
-    diff_text = await fetch_pull_request_diff(pr_context.repository, pr_context.pr_number)
+    diff_text = await mcp_fetch_pr_diff(pr_context.repository, pr_context.pr_number)
     classification = classify_backend_diff(diff_text, pr_context.changed_files)
     log_pr_classification(classification)
-    api_spec_result = await generate_api_spec_and_test_cases(pr_context, classification, diff_text)
+
+    # Retrieve similar historical PRs via ChromaDB MCP (with local RAG fallback)
+    rag_query_text = build_pr_embedding_document(
+        repository=pr_context.repository,
+        pr_number=pr_context.pr_number,
+        title=pr_context.title,
+        change_types=classification.change_types,
+        summary=classification.summary,
+        changed_files=pr_context.changed_files,
+        diff_excerpt=diff_text,
+    )
+    rag_retrieval, similar_prs_context = await mcp_retrieve_similar_prs(
+        repository=pr_context.repository,
+        query_text=rag_query_text,
+        exclude_pr_number=pr_context.pr_number,
+        top_k=3,
+    )
+
+    api_spec_result = await generate_api_spec_and_test_cases(
+        pr_context,
+        classification,
+        diff_text,
+        file_fetcher=mcp_fetch_file_content,
+        similar_prs_context=similar_prs_context,
+    )
     openapi_result = await generate_openapi_yaml(
         pr_context,
         classification,
@@ -131,7 +166,7 @@ async def classify_accepted_backend_pr(
         openapi_result.yaml_content,
         openapi_result.target_branch,
     )
-    notion_result = await update_notion_documentation(
+    notion_result = await mcp_update_notion_documentation(
         pr_context,
         service,
         classification,
@@ -139,7 +174,7 @@ async def classify_accepted_backend_pr(
         openapi_result,
         postman_result,
     )
-    await generate_and_send_release_email(
+    email_result = await mcp_generate_and_send_release_email(
         pr_context,
         classification,
         api_spec_result,
@@ -147,6 +182,67 @@ async def classify_accepted_backend_pr(
         postman_result,
         notion_result,
     )
+    github_side_effects = await mcp_run_github_side_effects(
+        repository=pr_context.repository,
+        pr_number=pr_context.pr_number,
+        title=pr_context.title,
+        author=pr_context.author,
+        merged_at=pr_context.merged_at,
+        head_branch=pr_context.head_branch,
+        base_branch=pr_context.base_branch,
+        default_branch=pr_context.default_branch,
+        diff_text=diff_text,
+        change_types=classification.change_types,
+        summary=classification.summary,
+        changed_files=pr_context.changed_files,
+    )
+
+    # Index the completed PR into ChromaDB MCP (with local RAG fallback)
+    openapi_summary = summarize_openapi(openapi_result.yaml_content)
+    detected_endpoints = list(getattr(openapi_summary, "endpoints", []) or [])
+    rag_store_result = await mcp_store_pr_context(
+        repository=pr_context.repository,
+        pr_number=pr_context.pr_number,
+        title=pr_context.title,
+        author=pr_context.author,
+        merged_at=pr_context.merged_at,
+        change_types=classification.change_types,
+        summary=classification.summary,
+        changed_files=pr_context.changed_files,
+        diff_excerpt=diff_text,
+        endpoints=detected_endpoints,
+    )
+
+    update_run(
+        pr_context,
+        agentProvider=get_agent_provider_status().as_dict(),
+        rag={
+            "retrieval": rag_retrieval.as_dict(),
+            "indexed": rag_store_result.as_dict(),
+        },
+        mcp={
+            "github": {
+                "server": "mergeflow-github-mcp",
+                "sideEffects": github_side_effects,
+            },
+            "chromadb": {
+                "server": "mergeflow-chromadb-mcp",
+                "backend": rag_store_result.backend,
+                "retrievedCount": len(rag_retrieval.similar_prs),
+            },
+            "notion": {
+                "server": "mergeflow-notion-mcp",
+                "success": notion_result.success,
+                "action": notion_result.action,
+            },
+            "sendgrid": {
+                "server": "mergeflow-sendgrid-mcp",
+                "success": email_result.success,
+                "statusCode": email_result.status_code,
+            },
+        },
+    )
+
     await cleanup_generated_repo_artifacts(pr_context, api_spec_result, openapi_result, postman_result)
     return classification
 

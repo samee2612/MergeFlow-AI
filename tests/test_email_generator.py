@@ -163,3 +163,16 @@ def _commit_result(path: str) -> GitHubCommitResult:
         file_path=path,
         destination=path,
     )
+
+
+def test_markdown_inline_to_html_converts_bold_code_and_links() -> None:
+    from backend.generators.email_generator import markdown_inline_to_html
+
+    sample = "**Happy Path:** Add standard gift wrap with `POST /orders` and [docs](https://notion.so/doc)."
+    rendered = markdown_inline_to_html(sample)
+
+    assert "<strong>Happy Path:</strong>" in rendered
+    assert "<strong>" in rendered and "</strong>" in rendered
+    assert "**Happy Path:**" not in rendered
+    assert "<code" in rendered and "POST /orders" in rendered
+    assert "<a href=\"https://notion.so/doc\"" in rendered

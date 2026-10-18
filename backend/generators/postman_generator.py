@@ -11,7 +11,12 @@ from google.genai import types
 from loguru import logger
 import yaml
 
-from backend.gemini_config import get_gemini_api_key, get_gemini_api_version, get_gemini_model_candidates
+from backend.gemini_config import (
+    get_gemini_api_key,
+    get_gemini_api_version,
+    get_gemini_model_candidates,
+    try_generate_with_claude,
+)
 from backend.generators.prompts import POSTMAN_GENERATOR_SYSTEM_PROMPT, POSTMAN_GENERATOR_USER_PROMPT
 from backend.github_client import (
     GitHubCommitResult,
@@ -305,6 +310,20 @@ def build_postman_prompt(pr_context: PullRequestContext, openapi_yaml: str) -> s
 
 
 def _generate_postman_collection_with_gemini(pr_context: PullRequestContext, openapi_yaml: str) -> str:
+    prompt = build_postman_prompt(pr_context, openapi_yaml)
+    claude_json = try_generate_with_claude(
+        prompt=prompt,
+        system_instruction=POSTMAN_GENERATOR_SYSTEM_PROMPT,
+        max_output_tokens=8000,
+        temperature=0.0,
+        component="postman_generator",
+    )
+    if claude_json:
+        try:
+            return validate_postman_collection_json(claude_json)
+        except Exception as error:
+            logger.warning("Claude Postman validation failed, falling back to Gemini error={error}", error=str(error))
+
     api_key = get_gemini_api_key()
     api_version = get_gemini_api_version()
     models = get_gemini_model_candidates()
@@ -318,7 +337,6 @@ def _generate_postman_collection_with_gemini(pr_context: PullRequestContext, ope
         api_key=api_key,
         http_options=types.HttpOptions(api_version=api_version),
     )
-    prompt = build_postman_prompt(pr_context, openapi_yaml)
     config = types.GenerateContentConfig(
         system_instruction=POSTMAN_GENERATOR_SYSTEM_PROMPT,
         max_output_tokens=8000,

@@ -718,7 +718,40 @@ def github_diff_headers() -> dict[str, str]:
     return _github_headers("application/vnd.github.v3.diff")
 
 
+_CACHED_GIT_CREDENTIAL_TOKEN: str | None = None
+_GIT_CREDENTIAL_CHECKED: bool = False
+
+
+def _git_credential_github_token() -> str | None:
+    global _CACHED_GIT_CREDENTIAL_TOKEN, _GIT_CREDENTIAL_CHECKED
+    if _GIT_CREDENTIAL_CHECKED:
+        return _CACHED_GIT_CREDENTIAL_TOKEN
+    _GIT_CREDENTIAL_CHECKED = True
+    try:
+        import subprocess
+
+        proc = subprocess.run(
+            ["git", "credential", "fill"],
+            input="protocol=https\nhost=github.com\n\n",
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            lines = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
+            pw = (lines.get("password") or "").strip()
+            if pw:
+                _CACHED_GIT_CREDENTIAL_TOKEN = pw
+                return pw
+    except Exception:
+        pass
+    return None
+
+
 def _github_token() -> str | None:
+    cred_token = _git_credential_github_token()
+    if cred_token:
+        return cred_token
     token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
     return token.strip() if token else None
 

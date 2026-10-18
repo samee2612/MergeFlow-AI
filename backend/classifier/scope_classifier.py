@@ -14,6 +14,7 @@ from backend.gemini_config import (
     get_gemini_api_key,
     get_gemini_api_version,
     get_gemini_model_candidates,
+    try_generate_with_claude,
 )
 
 load_dotenv()
@@ -119,17 +120,30 @@ def _classify_with_gemini(
     pr_title: str,
     repository: str,
 ) -> ChangeScopeClassification:
+    prompt = SCOPE_CLASSIFIER_USER_PROMPT.format(
+        repository=repository or "unknown",
+        pr_title=pr_title or "Untitled PR",
+        changed_files=_format_changed_files(changed_files),
+    )
+    claude_text = try_generate_with_claude(
+        prompt=prompt,
+        system_instruction=SCOPE_CLASSIFIER_SYSTEM_PROMPT,
+        max_output_tokens=300,
+        temperature=0.0,
+        component="scope_classifier",
+    )
+    if claude_text:
+        try:
+            return _parse_scope_classification_json(claude_text)
+        except Exception as error:
+            logger.warning("Claude scope classification parse failed, falling back to Gemini error={error}", error=str(error))
+
     api_key = get_gemini_api_key()
     api_version = get_gemini_api_version()
     models = get_gemini_model_candidates()
     client = genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(api_version=api_version),
-    )
-    prompt = SCOPE_CLASSIFIER_USER_PROMPT.format(
-        repository=repository or "unknown",
-        pr_title=pr_title or "Untitled PR",
-        changed_files=_format_changed_files(changed_files),
     )
     config = types.GenerateContentConfig(
         system_instruction=SCOPE_CLASSIFIER_SYSTEM_PROMPT,

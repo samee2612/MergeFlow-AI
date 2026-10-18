@@ -15,6 +15,12 @@ data/
 dump.rdb
 *.log
 
+# Node / Frontend
+node_modules/
+dist/
+frontend/node_modules/
+frontend/dist/
+
 # OS / IDE
 .DS_Store
 .idea/

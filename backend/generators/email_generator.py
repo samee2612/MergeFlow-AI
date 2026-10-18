@@ -279,23 +279,65 @@ def render_plain_text_email(report: dict[str, object]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def markdown_inline_to_html(text: str) -> str:
+    """Convert inline markdown (**, *, `, [text](url), raw urls, [ok]/[failed]) into safe HTML."""
+    safe = escape(text)
+
+    # Markdown links: [text](url) -> <a href="url">text</a>
+    safe = re.sub(
+        r"\[([^\]]+)\]\((https?://[^\s)]+)\)",
+        r'<a href="\2" style="color: #2563eb; text-decoration: underline;" target="_blank">\1</a>',
+        safe,
+    )
+
+    # Bold: **text** -> <strong>text</strong>
+    safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe)
+
+    # Italic: *text* -> <em>text</em>
+    safe = re.sub(r"(?<!\*)\*([^*]+?)\*(?!\*)", r"<em>\1</em>", safe)
+
+    # Inline code: `code` -> <code>code</code>
+    safe = re.sub(
+        r"`([^`]+)`",
+        r'<code style="background-color: #f1f5f9; padding: 2px 5px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.9em; color: #0f172a;">\1</code>',
+        safe,
+    )
+
+    # Standalone raw URLs (not already inside href="...")
+    safe = re.sub(
+        r'(?<!href=")(https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&\'()*+,;%=]+)(?!">)',
+        r'<a href="\1" style="color: #2563eb; text-decoration: underline;" target="_blank">\1</a>',
+        safe,
+    )
+
+    # Artifact status badges
+    safe = safe.replace("[ok]", '<span style="color: #16a34a; font-weight: bold;">[ok]</span>')
+    safe = safe.replace("[failed]", '<span style="color: #dc2626; font-weight: bold;">[failed]</span>')
+    safe = safe.replace("[missing]", '<span style="color: #9ca3af; font-weight: bold;">[missing]</span>')
+
+    return safe
+
+
 def render_html_email(report: dict[str, object]) -> str:
-    classification_items = "".join(f"<li>{escape(str(item))}</li>" for item in report["classification"])
+    classification_items = "".join(f"<li style='margin-bottom: 4px;'>{markdown_inline_to_html(str(item))}</li>" for item in report["classification"])
+    summary_html = "<br>".join(
+        markdown_inline_to_html(line) for line in str(report["summary"]).splitlines() if line.strip()
+    )
     return f"""<!doctype html>
 <html>
-  <body style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1f2937; line-height: 1.6; max-width: 680px; margin: 0 auto; padding: 20px;">
     <h1>MergeFlow Release Report</h1>
-    <p><strong>Repository:</strong><br>{escape(str(report["repository"]))}</p>
-    <p><strong>PR:</strong><br>{escape(str(report["pr"]))}</p>
-    <p><strong>Author:</strong><br>{escape(str(report["author"]))}</p>
+    <p><strong>Repository:</strong><br>{markdown_inline_to_html(str(report["repository"]))}</p>
+    <p><strong>PR:</strong><br>{markdown_inline_to_html(str(report["pr"]))}</p>
+    <p><strong>Author:</strong><br>{markdown_inline_to_html(str(report["author"]))}</p>
     <p><strong>Classification:</strong></p>
-    <ul>{classification_items}</ul>
-    <p><strong>Summary:</strong><br>{escape(str(report["summary"]))}</p>
+    <ul style="padding-left: 20px;">{classification_items}</ul>
+    <p><strong>Summary:</strong><br>{summary_html}</p>
     {render_html_list("Affected APIs", report["affected_apis"])}
     {render_html_list("Key Test Cases Generated", report["test_cases"])}
     {render_html_list("Generated Artifacts", report["artifacts"])}
     {render_html_list("Risks / Validation Notes", report["risks"])}
-    <p><strong>Timestamp:</strong><br>{escape(str(report["timestamp"]))}</p>
+    <p style="color: #6b7280; font-size: 0.875rem; margin-top: 24px;"><strong>Timestamp:</strong> {markdown_inline_to_html(str(report["timestamp"]))}</p>
   </body>
 </html>
 """
@@ -303,8 +345,8 @@ def render_html_email(report: dict[str, object]) -> str:
 
 def render_html_list(title: str, items: object) -> str:
     item_list = items if isinstance(items, list) else []
-    rendered_items = "".join(f"<li>{escape(str(item))}</li>" for item in item_list)
-    return f"<p><strong>{escape(title)}:</strong></p><ul>{rendered_items}</ul>"
+    rendered_items = "".join(f"<li style='margin-bottom: 6px;'>{markdown_inline_to_html(str(item))}</li>" for item in item_list)
+    return f"<p style='margin-top: 16px; margin-bottom: 6px;'><strong>{escape(title)}:</strong></p><ul style='padding-left: 20px;'>{rendered_items}</ul>"
 
 
 def format_plain_list(items: object) -> list[str]:

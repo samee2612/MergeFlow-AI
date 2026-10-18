@@ -17,6 +17,7 @@ from backend.gemini_config import (
     get_gemini_api_key,
     get_gemini_api_version,
     get_gemini_model_candidates,
+    try_generate_with_claude,
 )
 
 load_dotenv()
@@ -81,6 +82,23 @@ def classify_diff(diff_text: str, changed_files: list[str]) -> BackendDiffClassi
 
 
 def _classify_with_gemini(diff_text: str, changed_files: list[str]) -> BackendDiffClassification:
+    prompt = BACKEND_CLASSIFIER_USER_PROMPT.format(
+        changed_files=_format_changed_files(changed_files),
+        diff_text=diff_text[:MAX_DIFF_CHARS],
+    )
+    claude_text = try_generate_with_claude(
+        prompt=prompt,
+        system_instruction=BACKEND_CLASSIFIER_SYSTEM_PROMPT,
+        max_output_tokens=500,
+        temperature=0.0,
+        component="diff_classifier",
+    )
+    if claude_text:
+        try:
+            return _parse_classification_json(claude_text)
+        except Exception as error:
+            logger.warning("Claude diff classification parse failed, falling back to Gemini error={error}", error=str(error))
+
     api_key = get_gemini_api_key()
     api_version = get_gemini_api_version()
     models = get_gemini_model_candidates()
@@ -93,10 +111,6 @@ def _classify_with_gemini(diff_text: str, changed_files: list[str]) -> BackendDi
     client = genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(api_version=api_version),
-    )
-    prompt = BACKEND_CLASSIFIER_USER_PROMPT.format(
-        changed_files=_format_changed_files(changed_files),
-        diff_text=diff_text[:MAX_DIFF_CHARS],
     )
     config = _build_generate_content_config()
 

@@ -10,7 +10,12 @@ from google.genai import types
 from loguru import logger
 
 from backend.classifier.diff_classifier import BackendDiffClassification
-from backend.gemini_config import get_gemini_api_key, get_gemini_api_version, get_gemini_model_candidates
+from backend.gemini_config import (
+    get_gemini_api_key,
+    get_gemini_api_version,
+    get_gemini_model_candidates,
+    try_generate_with_claude,
+)
 from backend.generators.prompts import API_SPEC_GENERATOR_SYSTEM_PROMPT, API_SPEC_GENERATOR_USER_PROMPT
 from backend.github_client import (
     GitHubCommitResult,
@@ -74,6 +79,7 @@ async def generate_api_spec_and_test_cases(
     diff_text: str,
     file_fetcher: FileFetcher = fetch_repository_file_text,
     artifact_committer: ArtifactCommitter = commit_repository_file_text,
+    similar_prs_context: str = "No similar past PRs found in repository history.",
 ) -> ApiSpecGenerationResult:
     del artifact_committer  # API analysis is now an internal intermediate, not a committed artifact.
 
@@ -87,7 +93,12 @@ async def generate_api_spec_and_test_cases(
     )
 
     try:
-        markdown = _generate_markdown_with_gemini(pr_context, classification, file_contexts)
+        markdown = _generate_markdown_with_gemini(
+            pr_context,
+            classification,
+            file_contexts,
+            similar_prs_context=similar_prs_context,
+        )
     except Exception as error:
         logger.exception("API spec/test-case generation failed; writing fallback markdown error={error}", error=str(error))
         markdown = build_fallback_markdown(pr_context, classification, file_contexts, str(error))
@@ -187,7 +198,24 @@ def _generate_markdown_with_gemini(
     pr_context: PullRequestContext,
     classification: BackendDiffClassification,
     file_contexts: list[RelatedFileContext],
+    similar_prs_context: str = "No similar past PRs found in repository history.",
 ) -> str:
+    prompt = build_api_spec_prompt(
+        pr_context,
+        classification,
+        file_contexts,
+        similar_prs_context=similar_prs_context,
+    )
+    claude_markdown = try_generate_with_claude(
+        prompt=prompt,
+        system_instruction=API_SPEC_GENERATOR_SYSTEM_PROMPT,
+        max_output_tokens=4000,
+        temperature=0.0,
+        component="api_spec_generator",
+    )
+    if claude_markdown:
+        return claude_markdown
+
     api_key = get_gemini_api_key()
     api_version = get_gemini_api_version()
     models = get_gemini_model_candidates()
@@ -197,7 +225,6 @@ def _generate_markdown_with_gemini(
         api_key=api_key,
         http_options=types.HttpOptions(api_version=api_version),
     )
-    prompt = build_api_spec_prompt(pr_context, classification, file_contexts)
     config = types.GenerateContentConfig(
         system_instruction=API_SPEC_GENERATOR_SYSTEM_PROMPT,
         max_output_tokens=4000,
@@ -229,6 +256,7 @@ def build_api_spec_prompt(
     pr_context: PullRequestContext,
     classification: BackendDiffClassification,
     file_contexts: list[RelatedFileContext],
+    similar_prs_context: str = "No similar past PRs found in repository history.",
 ) -> str:
     return API_SPEC_GENERATOR_USER_PROMPT.format(
         repository=pr_context.repository,
@@ -238,6 +266,7 @@ def build_api_spec_prompt(
         classification_summary=classification.summary,
         changed_files=_format_list(pr_context.changed_files),
         related_files=_format_list([context.file_path for context in file_contexts]),
+        similar_prs_context=similar_prs_context,
         patches=_format_context_section(file_contexts, "patch"),
         file_contents=_format_context_section(file_contexts, "content"),
     )

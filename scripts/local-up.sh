@@ -40,6 +40,6 @@ source .venv/bin/activate
 trap 'kill 0' EXIT
 
 uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload &
-celery -A backend.worker.celery_app worker --loglevel=info &
+celery -A backend.worker.celery_app worker --pool=solo --loglevel=info &
 
 wait

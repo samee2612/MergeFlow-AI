@@ -11,7 +11,12 @@ from loguru import logger
 import yaml
 
 from backend.classifier.diff_classifier import BackendDiffClassification
-from backend.gemini_config import get_gemini_api_key, get_gemini_api_version, get_gemini_model_candidates
+from backend.gemini_config import (
+    get_gemini_api_key,
+    get_gemini_api_version,
+    get_gemini_model_candidates,
+    try_generate_with_claude,
+)
 from backend.generators.prompts import OPENAPI_GENERATOR_SYSTEM_PROMPT, OPENAPI_GENERATOR_USER_PROMPT
 from backend.github_client import (
     GitHubCommitResult,
@@ -158,7 +163,12 @@ def strip_markdown_fences(text: str) -> str:
     fence_match = re.fullmatch(r"```(?:yaml|yml)?\s*(?P<body>.*?)\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
     if fence_match:
         return fence_match.group("body").strip()
-    return stripped
+    lines = stripped.splitlines()
+    if lines and re.fullmatch(r"```(?:yaml|yml)?\s*", lines[0].strip(), flags=re.IGNORECASE):
+        lines = lines[1:]
+    if lines and re.fullmatch(r"```\s*", lines[-1].strip()):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
 
 
 def build_fallback_openapi_yaml(
@@ -249,17 +259,24 @@ def detect_endpoints(source_text: str) -> list[DetectedEndpoint]:
 
 
 def _detect_markdown_endpoints(source_text: str) -> list[DetectedEndpoint]:
+    # Restrict endpoint scanning to the API definition sections, avoiding test case & edge case bullet points
+    scan_text = source_text
+    test_cases_pos = re.search(r"^##\s*(?:5\.|Test Cases)", source_text, flags=re.MULTILINE | re.IGNORECASE)
+    if test_cases_pos:
+        scan_text = source_text[:test_cases_pos.start()]
+
     endpoints: list[DetectedEndpoint] = []
     endpoint_pattern = re.compile(
-        r"(?:Endpoint:\s*)?`?(GET|POST|PUT|PATCH|DELETE)\s+(/[A-Za-z0-9_./{}-]+)`?",
+        r'(?:[-*•]\s*|Endpoint:\s*|path:\s*|`|\*\*)?\b(GET|POST|PUT|PATCH|DELETE)\b\s*(?:\*\*)?\s*["\'`]?(/[A-Za-z0-9_./{}-]+)["\'`]?',
         flags=re.IGNORECASE,
     )
-    for match in endpoint_pattern.finditer(source_text):
+    for match in endpoint_pattern.finditer(scan_text):
         method = match.group(1).upper()
-        path = match.group(2)
+        raw_path = match.group(2).strip()
+        path = _normalize_endpoint_path(raw_path)
         context_start = max(0, match.start() - 500)
-        context_end = min(len(source_text), match.end() + 1200)
-        context = source_text[context_start:context_end]
+        context_end = min(len(scan_text), match.end() + 1200)
+        context = scan_text[context_start:context_end]
         response_codes = sorted({int(code) for code in re.findall(r"\b([1-5]\d{2})\b", context)})
         if 200 not in response_codes:
             response_codes.insert(0, 200)
@@ -277,6 +294,20 @@ def _detect_markdown_endpoints(source_text: str) -> list[DetectedEndpoint]:
             )
         )
     return endpoints
+
+
+def _normalize_endpoint_path(path: str) -> str:
+    """Normalize test-instance IDs (e.g. order_123, order_fulfilled) into standard {param_id} variables."""
+    segments = path.strip().split("/")
+    normalized_segments = []
+    for segment in segments:
+        if re.fullmatch(r"order_[A-Za-z0-9_]+", segment, flags=re.IGNORECASE) or segment == "non_existent_order":
+            normalized_segments.append("{order_id}")
+        elif re.fullmatch(r"customer_[A-Za-z0-9_]+", segment, flags=re.IGNORECASE):
+            normalized_segments.append("{customer_id}")
+        else:
+            normalized_segments.append(segment)
+    return "/".join(normalized_segments)
 
 
 def detect_schema_names(source_text: str) -> list[str]:
@@ -636,6 +667,20 @@ def _generate_openapi_yaml_with_gemini(
     classification: BackendDiffClassification,
     api_analysis_markdown: str,
 ) -> str:
+    prompt = build_openapi_prompt(pr_context, classification, api_analysis_markdown)
+    claude_yaml = try_generate_with_claude(
+        prompt=prompt,
+        system_instruction=OPENAPI_GENERATOR_SYSTEM_PROMPT,
+        max_output_tokens=6000,
+        temperature=0.0,
+        component="openapi_generator",
+    )
+    if claude_yaml:
+        try:
+            return validate_openapi_yaml(claude_yaml)
+        except Exception as error:
+            logger.warning("Claude OpenAPI validation failed, falling back to Gemini error={error}", error=str(error))
+
     api_key = get_gemini_api_key()
     api_version = get_gemini_api_version()
     models = get_gemini_model_candidates()
@@ -649,7 +694,6 @@ def _generate_openapi_yaml_with_gemini(
         api_key=api_key,
         http_options=types.HttpOptions(api_version=api_version),
     )
-    prompt = build_openapi_prompt(pr_context, classification, api_analysis_markdown)
     config = types.GenerateContentConfig(
         system_instruction=OPENAPI_GENERATOR_SYSTEM_PROMPT,
         max_output_tokens=6000,
